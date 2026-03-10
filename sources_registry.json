@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "source": "data/sample.txt",
+      "chunk_count": 3,
+      "chat_id": null
+    },
+    {
+      "source": "data/TSMC2025Q4 Financial Statements – Document Template - PRD.pdf",
+      "chunk_count": 17,
+      "chat_id": null
+    },
+    {
+      "source": "data/南亞科2025Q3財報.pdf",
+      "chunk_count": 62,
+      "chat_id": null
+    },
+    {
+      "source": "data/財報測試.md",
+      "chunk_count": 5,
+      "chat_id": null
+    }
+  ]
+}

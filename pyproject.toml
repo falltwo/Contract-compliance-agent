@@ -1,0 +1,34 @@
+[project]
+name = "agent-demo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pypdf",
+    "tavily-python>=0.5.0",
+    "google-genai>=1.62.0",
+    "langgraph>=1.0.8",
+    "openai>=2.20.0",
+    "pinecone>=8.0.0",
+    "python-dotenv>=1.2.1",
+    "streamlit>=1.54.0",
+    "streamlit-echarts>=0.5.0",
+    "firecrawl-py>=1.0.0",
+    "groq>=0.23.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.basedpyright]
+# 使用專案 .venv，讓 basedpyright 能解析 dotenv、google.genai、tavily 等依賴
+venvPath = "."
+venv = ".venv"

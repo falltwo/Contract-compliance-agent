@@ -1,0 +1,42 @@
+# Agent-DEMO 主題：精煉深色 + 青綠主色，專業且易讀
+# 字型：Plus Jakarta Sans（標題/內文）、JetBrains Mono（程式碼）
+
+[theme]
+base = "dark"
+primaryColor = "#14B8A6"
+backgroundColor = "#0F172A"
+secondaryBackgroundColor = "#1E293B"
+textColor = "#F1F5F9"
+# 語意色與主色協調（成功偏青綠、警告/錯誤不搶戲）
+greenColor = "#34D399"
+yellowColor = "#FBBF24"
+redColor = "#F87171"
+orangeColor = "#FB923C"
+font = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+headingFont = "Plus Jakarta Sans:https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+
+[theme.sidebar]
+backgroundColor = "#0F172A"
+secondaryBackgroundColor = "#1E293B"
+textColor = "#E2E8F0"
+
+# 淺色主題：使用者可在右上角選單切換
+[theme.light]
+base = "light"
+primaryColor = "#0D9488"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+greenColor = "#059669"
+yellowColor = "#D97706"
+redColor = "#DC2626"
+orangeColor = "#EA580C"
+
+[theme.light.sidebar]
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#334155"
+
+[browser]
+gatherUsageStats = false

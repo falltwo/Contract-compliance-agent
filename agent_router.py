@@ -1,0 +1,741 @@
+import json
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+from google import genai
+from google.genai import types
+
+from company_tools import financial_metrics, generate_quarterly_plan, parse_dates_from_text
+from echarts_mcp_client import call_echarts_mcp, use_echarts_mcp
+from expert_agents import data_analyst_agent, esg_agent, financial_report_agent
+from echarts_tools import create_chart_option
+from firecrawl_tools import scrape_url, search_and_scrape
+from rag_graph import retrieve_only, run_rag, search_similar, summarize_source
+from sources_registry import list_sources
+
+# ---------- Tool 註冊：支援的 tool 名稱集中管理，_decide_tool 與執行分支皆依此為準 ----------
+SUPPORTED_TOOLS = frozenset({
+    "rag_search",
+    "research",
+    "small_talk",
+    "list_sources",
+    "search_similar",
+    "summarize_source",
+    "web_search",
+    "scrape_url",
+    "firecrawl_search",
+    "ask_web_vs_rag",
+    "create_chart",
+    "analyze_and_chart",
+    "financial_metrics",
+    "parse_dates_from_text",
+    "generate_quarterly_plan",
+    "financial_report_agent",
+    "esg_agent",
+    "data_analyst_agent",
+})
+
+
+def _extract_url_from_text(text: str) -> str | None:
+    """從文字中擷取第一個 http(s) URL。"""
+    if not text or not text.strip():
+        return None
+    m = re.search(r"https?://[^\s<>)\]]+", text.strip())
+    return m.group(0).rstrip(".,;:)") if m else None
+
+
+# ---------- Firecrawl 意圖判斷（Agent / Tool 層）----------
+# 先由此判斷「是否要用 Firecrawl、用哪一個」，再決定是否交給總管 Router。
+# 規則優先；若設 FIRECRAWL_USE_LLM_GATE=1 且規則無結果，可再跑一次 LLM 判斷。
+
+_FIRECRAWL_SCRAPE_PHRASES = (
+    "爬這個網頁", "擷取這個網頁", "抓這個網頁", "抓取網頁",
+    "擷取此 url", "擷取此 url", "擷取這個 url", "爬這個 url",
+    "幫我爬", "幫我擷取", "把這頁", "這則連結", "這個連結",
+)
+_FIRECRAWL_SEARCH_PHRASES = (
+    "搜尋並擷取", "擷取網路", "從網路搜尋並擷取",
+    "搜尋網路並擷取", "網路搜尋並擷取", "找.*新聞", "網路上的.*新聞",
+)
+
+
+def firecrawl_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
+    """判斷是否應使用 Firecrawl 以及用哪一個 tool（scrape_url / firecrawl_search）。
+
+    規則優先、不呼叫 LLM，適合穩定觸發。回傳 (tool_name, tool_args) 或 None（交給總管 Router）。
+    """
+    if not question or not question.strip():
+        return None
+    q = question.strip()
+    url = _extract_url_from_text(q)
+
+    # 有 URL 且意圖像「擷取單頁」
+    if url:
+        for phrase in _FIRECRAWL_SCRAPE_PHRASES:
+            if phrase in q or phrase.replace("網頁", "連結") in q:
+                return ("scrape_url", {"url": url, "only_main_content": True})
+        if "擷取" in q or "爬" in q or "抓" in q:
+            return ("scrape_url", {"url": url, "only_main_content": True})
+
+    # 無 URL 但意圖像「搜尋並擷取」
+    for phrase in _FIRECRAWL_SEARCH_PHRASES:
+        if re.search(phrase, q):
+            query = q
+            for p in ("搜尋並擷取", "擷取網路", "從網路搜尋並擷取", "搜尋網路並擷取", "網路搜尋並擷取"):
+                query = query.replace(p, "").strip()
+            if re.match(r"^找.*新聞$", q):
+                query = re.sub(r"^找\s*", "", q).strip()
+            if query:
+                return ("firecrawl_search", {"query": query, "limit": 5})
+            break
+
+    # 關鍵字「新聞」「網路上的」等可能想用搜尋擷取
+    if re.search(r"(台灣|全球|最新).*新聞", q) or "網路上的" in q or "網路上找" in q:
+        return ("firecrawl_search", {"query": q, "limit": 5})
+
+    return None
+
+
+def firecrawl_intent_with_llm(question: str) -> Tuple[str, Dict[str, Any]] | None:
+    """當規則無法判斷時，用一次 LLM 只回答「要不要用 Firecrawl、用哪個、參數」。
+    需設 FIRECRAWL_USE_LLM_GATE=1 才會被呼叫。回傳 (tool_name, tool_args) 或 None。
+    """
+    if os.getenv("FIRECRAWL_USE_LLM_GATE", "").strip().lower() not in ("1", "true", "yes"):
+        return None
+    client, model = _init_llm_client()
+    url = _extract_url_from_text(question)
+    system = (
+        "你只負責判斷：使用者是否要「擷取網頁內容」或「搜尋網路並擷取內容」？\n"
+        "若「是」且問題中有明確 URL，回傳 JSON：{\"use\": \"scrape_url\", \"url\": \"該 URL\"}\n"
+        "若「是」且是關鍵字/主題（例如新聞、某主題），回傳 JSON：{\"use\": \"firecrawl_search\", \"query\": \"關鍵字或主題\"}\n"
+        "若「否」（例如只是問知識庫、一般聊天），回傳：{\"use\": \"none\"}\n"
+        "禁止輸出其他文字，只輸出一段 JSON。"
+    )
+    prompt = f"使用者說：{question}\n\n請輸出上述 JSON："
+    try:
+        out = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=system),
+        )
+        text = (out.text or "").strip()
+        data = json.loads(text)
+        use = (data.get("use") or "").strip().lower()
+        if use == "scrape_url":
+            u = (data.get("url") or url or "").strip()
+            if u:
+                return ("scrape_url", {"url": u, "only_main_content": True})
+        if use == "firecrawl_search":
+            query = (data.get("query") or question).strip()
+            if query:
+                return ("firecrawl_search", {"query": query, "limit": 5})
+    except Exception as e:
+        logger.debug("firecrawl_llm_gate failed: %s", e, exc_info=True)
+    return None
+
+
+def _format_firecrawl_scrape_result(raw: Any, max_chars: int = 30000) -> str:
+    """將 Firecrawl scrape 回傳值轉成可顯示的字串（優先 markdown）。"""
+    if isinstance(raw, str):
+        return raw[:max_chars] + ("…" if len(raw) > max_chars else "")
+    if isinstance(raw, dict):
+        md = raw.get("markdown") or raw.get("content") or raw.get("data", {}).get("markdown")
+        if isinstance(md, str) and md.strip():
+            return md[:max_chars] + ("…" if len(md) > max_chars else "")
+        title = raw.get("metadata", {}).get("title") if isinstance(raw.get("metadata"), dict) else None
+        if title:
+            return f"# {title}\n\n(內容未擷取到 markdown，請檢查 API 回傳)"
+    return str(raw)[:max_chars] + ("…" if len(str(raw)) > max_chars else "")
+
+
+def _web_search(query: str, max_results: int = 8) -> str:
+    """使用 Tavily 做網路搜尋；若未設定 TAVILY_API_KEY 則回傳提示訊息。"""
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        return (
+            "目前未設定 TAVILY_API_KEY，無法使用網路搜尋。\n"
+            "請在 .env 加入 TAVILY_API_KEY（可至 https://tavily.com 申請），即可啟用 web_search 工具。"
+        )
+    try:
+        from tavily import TavilyClient
+
+        client = TavilyClient(api_key=api_key)
+        response = client.search(
+            query=query,
+            max_results=max_results,
+            include_answer=True,
+            search_depth="basic",
+        )
+        answer = (response.get("answer") or "").strip()
+        results = response.get("results") or []
+        if not answer and not results:
+            return "未找到與此查詢相關的網路結果。"
+        lines = [answer] if answer else []
+        if results:
+            lines.append("\n**參考連結：**")
+            for r in results:
+                title = r.get("title") or "（無標題）"
+                url = r.get("url") or ""
+                content = (r.get("content") or "").strip()
+                if content and len(content) > 200:
+                    content = content[:200] + "…"
+                if url:
+                    lines.append(f"- [{title}]({url})")
+                if content:
+                    lines.append(f"  {content}")
+        return "\n\n".join(lines)
+    except Exception as e:
+        return f"網路搜尋時發生錯誤：{e!s}"
+
+
+def _init_llm_client() -> Tuple[Any, str]:
+    """初始化 chat 用 LLM client（可為 Gemini 或 Groq，由 EVAL_USE_GROQ + GROQ_API_KEY 決定）。"""
+    from llm_client import get_chat_client_and_model
+
+    return get_chat_client_and_model()
+
+
+def _analyze_and_chart(
+    client: genai.Client,
+    model: str,
+    question: str,
+    top_k: int = 8,
+    generate_chart: bool = True,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """從知識庫檢索財報/文件內容，用 LLM 分析可視化項目；若 generate_chart=True 再產出一張圖。
+    回傳 (answer_text, chart_option/asked_chart_confirmation 或 None)。"""
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    if not context or context.strip() == "(無檢索內容)" or not chunks:
+        return "知識庫中找不到與「財報」或「資料」相關的內容，請先灌入文件（例如 data 裡的財報）或改用 list_sources 查看有哪些來源。", None
+
+    system = (
+        "你是一位財務分析助理。請根據「檢索內容」與「使用者問題」做兩件事：\n"
+        "(1) 用兩三句話列出「可分析的項目」（例如：各產品線營收、市佔率、成長率、毛利率、營收結構等）；\n"
+        "(2) 從內容中抽出「最適合畫成一張圖」的數據，輸出「一段純 JSON」（不要 markdown 或其它文字）。\n"
+        "**重要**：若使用者要求「各公司」「多間公司」或「比較多家」的指標（如總營收、毛利率、淨利潤、營收成長率），"
+        "請產出「一張」比較圖：x 軸為各公司名稱，數列為使用者要求的指標（可選長條圖 bar 並用 series_data 表示單一指標，或多組數列）；"
+        "勿只選單一公司。若檢索內容中只有一間公司資料，再產該公司圖。\n"
+        "JSON 格式：\n"
+        "- 若有類目+數值（如產品線+營收 或 **各公司+營收**）：{\"analysis_summary\": \"可分析項目：...\", \"chart_type\": \"bar\" 或 \"line\", \"chart_title\": \"圖表標題\", \"x_axis_data\": [\"類目1\", \"類目2\"], \"series_data\": [數值1, 數值2]}\n"
+        "- 若為比例/結構（如市佔）：{\"analysis_summary\": \"...\", \"chart_type\": \"pie\", \"chart_title\": \"...\", \"pie_data\": [{\"name\": \"A\", \"value\": 10}, ...]}\n"
+        "- 若內容不足以畫圖：{\"analysis_summary\": \"...\", \"chart_type\": \"none\"}\n"
+        "只輸出一段 JSON，禁止在 JSON 前後加說明。"
+    )
+    prompt = f"## 使用者問題\n{question}\n\n## 檢索內容\n{context}\n\n請依指示輸出 analysis_summary 與圖表資料的 JSON："
+    try:
+        out = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=system),
+        )
+        text = (out.text or "").strip()
+        # 去掉可能的 markdown 代碼塊
+        if "```" in text:
+            for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", text):
+                text = block.strip()
+                break
+        data = json.loads(text)
+    except Exception as e:
+        logger.warning("analyze_and_chart: parse LLM output failed: %s", e, exc_info=True)
+        return f"解析分析結果時發生錯誤：{e!s}", None
+
+    summary = (data.get("analysis_summary") or "").strip() or "已檢索到相關內容。"
+    chart_type = (data.get("chart_type") or "").strip().lower()
+    if chart_type == "none" or not chart_type:
+        return summary + "\n\n（目前內容不足以自動產出圖表，您可改說「畫一張長條圖，資料 [10, 20, 30]」指定數據。）", None
+
+    # 只詢問、不產圖：回傳分析摘要並請使用者確認後再生成
+    if not generate_chart:
+        return summary + "\n\n需要幫我生成圖表嗎？", {"asked_chart_confirmation": True, "chart_query": question}
+
+    chart_title = (data.get("chart_title") or "資料圖表").strip()
+    try:
+        if chart_type == "pie":
+            pie_data = data.get("pie_data") or []
+            if not pie_data:
+                return summary + "\n\n（未抽出圓餅圖資料。）", None
+            option = create_chart_option(chart_type="pie", data=pie_data, title=chart_title)
+            return summary + "\n\n已根據上述資料產生圖表，請見下方。", {
+                "chart_option": option,
+                "chart_chunks": chunks,
+                "chart_sources": sources,
+            }
+        else:
+            x_axis_data = data.get("x_axis_data") or []
+            series_data = data.get("series_data") or []
+            if not series_data:
+                return summary + "\n\n（未抽出圖表數列。）", None
+            option = create_chart_option(
+                chart_type=chart_type,
+                data=series_data,
+                title=chart_title,
+                x_axis_data=x_axis_data if x_axis_data else None,
+            )
+        return summary + "\n\n已根據上述資料產生圖表，請見下方。", {
+            "chart_option": option,
+            "chart_chunks": chunks,
+            "chart_sources": sources,
+        }
+    except Exception as e:
+        logger.warning("analyze_and_chart: chart generation failed: %s", e, exc_info=True)
+        return summary + f"\n\n圖表產生時發生錯誤：{e!s}", None
+
+
+def _decide_tool(
+    client: genai.Client,
+    model: str,
+    question: str,
+    history: List[Dict[str, Any]] | None = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """讓模型決定要呼叫哪一個 tool，以及對應的參數。
+
+    目前支援的 tool 名稱：
+    - rag_search       → 問題需要根據公司文件/知識庫回答（會查 RAG 並生成答案）
+    - research         → 先查知識庫，不足時再補網路搜尋，最後整合成一份答案（公司文件優先、必要時補外部）
+    - small_talk       → 一般聊天、閒聊
+    - list_sources     → 使用者想「列出知識庫有哪些文件/來源」或「這個對話灌入了什麼」
+    - search_similar   → 使用者給一段話，想找知識庫裡「最相關的段落」或「出處」
+    - summarize_source → 使用者想對「某一份文件/某一個來源」做摘要（需在 tool_args 給 source）
+    - web_search       → 問題是即時資訊、新聞、外部資料，或 RAG 無法回答時用網路搜尋
+    - scrape_url       → 使用者給一個網址，要「爬這個網頁」「擷取這個 URL」的內容（tool_args 需含 url，或問題中有 URL）
+    - firecrawl_search → 使用者要「搜尋並擷取」網路內容（關鍵字搜尋後擷取前幾筆頁面內容）
+
+    回傳：(tool_name, tool_args)
+    """
+    history = history or []
+
+    history_blocks: list[str] = []
+    for turn in history[-6:]:
+        role = turn.get("role", "user")
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        label = "使用者" if role == "user" else "助理"
+        history_blocks.append(f"{label}：{content}")
+    history_text = "\n".join(history_blocks)
+
+    system = (
+        "你是一個工具路由器，負責決定這一輪對話要使用哪一個工具。\n"
+        "目前可用的工具有：\n"
+        "1) rag_search       → 問題需要根據公司文件/知識庫回答\n"
+        "2) research         → 先查知識庫、不足再補網路，整合成一份答案（適合「公司文件優先、必要時查外部」）\n"
+        "3) small_talk       → 一般聊天、閒聊\n"
+        "4) list_sources     → 使用者想「列出知識庫有哪些文件」或「這個對話灌入了什麼」\n"
+        "5) search_similar   → 使用者給一段話，想找知識庫裡「最相關的段落」或「出處」\n"
+        "6) summarize_source → 使用者想對「某一份文件/某一個來源」做摘要；tool_args 需含 {\"source\": \"來源路徑\"}\n"
+        "7) web_search       → 問題是即時資訊、新聞、股價、外部事件等，需用網路搜尋\n"
+        "8) scrape_url       → 使用者給網址要「爬這個網頁」「擷取此 URL」；tool_args 需含 {\"url\": \"https://...\"}\n"
+        "9) firecrawl_search → 使用者要「搜尋並擷取」、「從網路搜尋並擷取」某關鍵字或新聞等網路內容；tool_args 需含 {\"query\": \"關鍵字\"}。注意：問「台灣 AI 新聞」「某主題的網路內容」且明確要「擷取」時選此項，不要選 rag_search。\n"
+        "10) ask_web_vs_rag → 僅在「意圖模糊」時使用：使用者問新聞、最新、某主題，但沒說要從「知識庫」還是「網路擷取」。選此項後會由系統追問使用者要哪一種，下一輪再依回覆執行。\n"
+        "11) create_chart → 使用者要畫圖、可視化、圖表；tool_args 需含 {\"chart_type\": \"bar\"或\"line\"或\"pie\"或\"scatter\", \"data\": [...]}，可選 title, series_name。\n"
+        "12) analyze_and_chart → 使用者要「分析財報/資料並畫圖」「看可以分析什麼並畫圖」；從知識庫檢索後自動分析並產出一張圖，tool_args 可為 {}。\n"
+        "13) financial_metrics → 使用者要「算今年 vs 去年成長」「幫我算營收成長率」「財報指標計算」；tool_args 需含 {\"revenue_this_year\": 數字, \"revenue_last_year\": 數字}，可選 gross_margin_this_year, gross_margin_last_year, net_margin_this_year, net_margin_last_year, unit（如 \"億\"）。\n"
+        "14) parse_dates_from_text → 使用者要「把文字中的日期解析出來」「這段話裡有哪些日期」；tool_args 需含 {\"text\": \"要解析的文字\"}，或問題即為該段文字。\n"
+        "15) generate_quarterly_plan → 使用者要「產生未來 4 季的計畫表」「排程」「季度規劃」；tool_args 可含 {\"topic\": \"主題\", \"start_quarter\": \"2025Q1\", \"num_quarters\": 4}。\n"
+        "16) financial_report_agent → 問題明顯是「財報、營收、毛利、淨利、法說會、公司營運、EPS、現金流」等；交給財報專家子 Agent 回答，強調指標說明與風險提示，tool_args 可為 {}。\n"
+        "17) esg_agent → 問題明顯是「ESG、環境社會治理、訴訟、供應鏈風險、法遵、裁罰、風險揭露」等；交給 ESG／風險法遵專家子 Agent 回答，tool_args 可為 {}。\n"
+        "18) data_analyst_agent → 使用者要「分析這份資料、報表摘要、數據趨勢、從內容裡整理數字」等；交給資料分析專家，依檢索內容做數據摘要與重點發現，tool_args 可為 {}。\n"
+        "請嚴格輸出一段 JSON，格式例如：\n"
+        '  {\"tool\": \"rag_search\", \"tool_args\": {}}\n'
+        "或 {\"tool\": \"research\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"web_search\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"scrape_url\", \"tool_args\": {\"url\": \"https://example.com\"}}\n"
+        "或 {\"tool\": \"firecrawl_search\", \"tool_args\": {\"query\": \"關鍵字\"}}\n"
+        "或 {\"tool\": \"ask_web_vs_rag\", \"tool_args\": {\"query\": \"使用者問的主題（用於之後執行時）\"}}\n"
+        "或 {\"tool\": \"create_chart\", \"tool_args\": {\"chart_type\": \"bar\", \"data\": [10,20,30], \"title\": \"營收\"}}\n"
+        "或 {\"tool\": \"analyze_and_chart\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"financial_metrics\", \"tool_args\": {\"revenue_this_year\": 100, \"revenue_last_year\": 80}}\n"
+        "或 {\"tool\": \"parse_dates_from_text\", \"tool_args\": {\"text\": \"會議訂在 2025年3月15日 與 Q2 檢討\"}}\n"
+        "或 {\"tool\": \"generate_quarterly_plan\", \"tool_args\": {\"topic\": \"產品上市\", \"start_quarter\": \"2025Q1\", \"num_quarters\": 4}}\n"
+        "或 {\"tool\": \"financial_report_agent\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"esg_agent\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"data_analyst_agent\", \"tool_args\": {}}\n"
+        "禁止輸出任何解釋文字或多餘內容。"
+    )
+
+    if history_text:
+        prompt = f"過去對話：\n{history_text}\n\n目前使用者問題：{question}\n\n請選擇最合適的工具並輸出 JSON："
+    else:
+        prompt = f"使用者問題：{question}\n\n請選擇最合適的工具並輸出 JSON："
+
+    out = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=system),
+    )
+    text = (out.text or "").strip()
+
+    try:
+        data = json.loads(text)
+        tool = str(data.get("tool") or "").strip()
+        if tool not in SUPPORTED_TOOLS:
+            raise ValueError("unsupported tool")
+        args = data.get("tool_args") or {}
+        if not isinstance(args, dict):
+            args = {}
+        return tool, args
+    except Exception as e:
+        logger.warning("tool decision parse failed, fallback to rag_search: %s", e, exc_info=True)
+        return "rag_search", {}
+
+
+# 使用者回覆「要」「好」「生成」等即視為同意產圖
+_CHART_CONFIRM_PHRASES = (
+    "要", "好", "生成", "幫我生成", "可以", "好呀", "好啊", "好喔", "畫", "產圖",
+    "生成圖表", "幫我畫", "幫我產圖", "好請", "請生成", "要的", "要啊",
+)
+
+
+def route_and_answer(
+    *,
+    question: str,
+    top_k: int,
+    history: List[Dict[str, Any]] | None = None,
+    strict: bool = True,
+    chat_id: str | None = None,
+    original_question: str | None = None,
+    clarification_reply: str | None = None,
+    chart_confirmation_question: str | None = None,
+    chart_confirmation_reply: str | None = None,
+) -> Tuple[str, List[str], List[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
+    """由總管 Agent 判斷要用哪個 tool，然後回傳答案。
+
+    目前支援：rag_search、research、small_talk、list_sources、search_similar、
+    summarize_source、web_search、scrape_url、firecrawl_search、ask_web_vs_rag、create_chart、analyze_and_chart。
+    chat_id：可選，用於 list_sources 時只列該對話灌入的來源。
+    original_question / clarification_reply：當上一輪回傳 ask_web_vs_rag 後，呼叫端傳入
+    使用者當時的問題與本輪回覆（例如「網路」或「知識庫」），會依此直接執行對應 tool，不再追問。
+    chart_confirmation_question / chart_confirmation_reply：上一輪已回「需要幫我生成圖表嗎？」，
+    本輪使用者回覆（例如「要」「好」）時傳入，會依此執行產圖。
+    回傳：(answer, sources, chunks, tool_name, extra)。extra 在 create_chart 時為 {"chart_option": ...}，其餘見各 tool。
+    """
+    history = history or []
+
+    # 圖表確認：上一輪已問「需要幫我生成圖表嗎？」，本輪使用者說要 → 直接產圖
+    if chart_confirmation_question and chart_confirmation_reply:
+        reply = chart_confirmation_reply.strip()
+        if reply and any(p in reply for p in _CHART_CONFIRM_PHRASES):
+            client, llm_model = _init_llm_client()
+            # 以使用者本輪的具體要求為準（例如「好畫出各公司的營收、毛利率」），讓檢索與圖表依此產出
+            query = reply if reply else (chart_confirmation_question.strip() or "財報 財務 產品線 營收 市佔率")
+            answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=True)
+            if extra and extra.get("chart_option") and use_echarts_mcp():
+                ok, b64, _err = call_echarts_mcp(extra["chart_option"], width=800, height=500, output_type="png")
+                if ok and b64:
+                    # 保留圖表依據的檢索片段，供前端展開查看
+                    out_extra = {"chart_image_base64": b64}
+                    if extra.get("chart_chunks") is not None:
+                        out_extra["chart_chunks"] = extra["chart_chunks"]
+                    if extra.get("chart_sources") is not None:
+                        out_extra["chart_sources"] = extra["chart_sources"]
+                    return answer, [], [], "analyze_and_chart", out_extra
+            return answer, [], [], "analyze_and_chart", extra
+
+    # 澄清回覆：上一輪問了「知識庫還是網路」，本輪依使用者回覆直接執行
+    if original_question and clarification_reply:
+        reply = clarification_reply.strip().lower()
+        if any(k in reply for k in ("網路", "擷取", "搜尋", "web", "firecrawl", "爬")):
+            query = original_question.strip()
+            limit = 5
+            raw = search_and_scrape(query, limit=limit)
+            if isinstance(raw, str) and ("未設定" in raw or "失敗" in raw):
+                return raw, [], [], "firecrawl_search", None
+            if isinstance(raw, dict):
+                data = raw.get("data") if isinstance(raw.get("data"), list) else raw.get("results")
+                if data:
+                    parts = []
+                    for i, item in enumerate(data, 1):
+                        if isinstance(item, dict):
+                            title = item.get("title") or (item.get("metadata") or {}).get("title") or "（無標題）"
+                            url_h = item.get("url") or (item.get("metadata") or {}).get("source") or ""
+                            md = item.get("markdown") or item.get("content") or ""
+                            parts.append(f"## [{i}] {title}\n{url_h}\n\n{md[:4000]}{'…' if len(str(md)) > 4000 else ''}")
+                        else:
+                            parts.append(str(item)[:2000])
+                    return "\n\n---\n\n".join(parts), [], [], "firecrawl_search", None
+            return _format_firecrawl_scrape_result(raw), [], [], "firecrawl_search", None
+        if any(k in reply for k in ("知識庫", "文件", "內部", "rag")):
+            rag_state = run_rag(question=original_question, top_k=top_k, history=history, strict=False)
+            return (
+                rag_state.get("answer", "") or "",
+                rag_state.get("sources", []) or [],
+                rag_state.get("chunks", []) or [],
+                "rag_search",
+                None,
+            )
+        # 回覆不明確，用原始問題再走一次正常路由
+        question = original_question
+
+    # 嚴格模式：直接走 rag_search，不做路由判斷
+    if strict:
+        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=True)
+        answer = rag_state.get("answer", "") or ""
+        sources = rag_state.get("sources", []) or []
+        chunks = rag_state.get("chunks", []) or []
+        return answer, sources, chunks, "rag_search", None
+
+    # Firecrawl 意圖層：先判斷是否要用 Firecrawl、用哪一個（scrape_url / firecrawl_search）
+    tool, tool_args = None, {}
+    intent = firecrawl_intent(question)
+    if intent is None:
+        intent = firecrawl_intent_with_llm(question)
+    if intent is not None:
+        tool, tool_args = intent
+    if tool is None:
+        client, llm_model = _init_llm_client()
+        tool, tool_args = _decide_tool(client, llm_model, question, history)
+
+    if tool == "ask_web_vs_rag":
+        # 意圖模糊：追問使用者要從知識庫還是網路擷取；由呼叫端（Streamlit）記住 original_question，下一輪傳回
+        query_for_later = (tool_args.get("query") or question).strip()
+        answer = (
+            "您是想從 **知識庫** 查詢，還是從 **網路** 搜尋並擷取最新內容？\n\n"
+            "請回覆「**知識庫**」或「**網路**」，我就會依您的選擇執行。"
+        )
+        # 回傳時用 tool_name 標記，呼叫端可依此儲存 pending_question = question（或 query_for_later）待下一輪使用
+        return answer, [], [], "ask_web_vs_rag", None
+
+    if tool == "create_chart":
+        chart_type = (tool_args.get("chart_type") or "bar").strip().lower()
+        data = tool_args.get("data")
+        title = (tool_args.get("title") or "").strip() or None
+        series_name = (tool_args.get("series_name") or "").strip() or None
+        x_axis_data = tool_args.get("x_axis_data")
+        if not data and question.strip():
+            try:
+                import json as _json
+                data = _json.loads(question)
+            except Exception as e:
+                logger.debug("create_chart: parse question as JSON failed: %s", e)
+        if not data:
+            return "未提供圖表資料（請在 tool_args 給 data，或問題中給 JSON 陣列）。", [], [], "create_chart", None
+        try:
+            option = create_chart_option(
+                chart_type=chart_type,
+                data=data,
+                title=title,
+                series_name=series_name,
+                x_axis_data=x_axis_data,
+            )
+            if use_echarts_mcp():
+                ok, b64, err = call_echarts_mcp(option, width=800, height=500, output_type="png")
+                if ok and b64:
+                    return "已產生圖表（ECharts MCP），請見下方。", [], [], "create_chart", {"chart_image_base64": b64}
+                if err:
+                    pass  # 靜默 fallback 到內建渲染
+            return "已產生圖表，請見下方。", [], [], "create_chart", {"chart_option": option}
+        except Exception as e:
+            logger.exception("create_chart failed")
+            return f"圖表產生失敗：{e!s}", [], [], "create_chart", None
+
+    if tool == "analyze_and_chart":
+        query = (tool_args.get("query") or question).strip() or "財報 財務 產品線 營收 市佔率"
+        client, llm_model = _init_llm_client()
+        # 先只分析並詢問「需要幫我生成圖表嗎？」，不直接產圖；使用者確認後由 chart_confirmation 流程產圖
+        answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=False)
+        return answer, [], [], "analyze_and_chart", extra
+
+    if tool == "financial_metrics":
+        rev_this = tool_args.get("revenue_this_year")
+        rev_last = tool_args.get("revenue_last_year")
+        gm_this = tool_args.get("gross_margin_this_year")
+        gm_last = tool_args.get("gross_margin_last_year")
+        nm_this = tool_args.get("net_margin_this_year")
+        nm_last = tool_args.get("net_margin_last_year")
+        unit = (tool_args.get("unit") or "億").strip()
+        answer = financial_metrics(
+            revenue_this_year=rev_this,
+            revenue_last_year=rev_last,
+            gross_margin_this_year=gm_this,
+            gross_margin_last_year=gm_last,
+            net_margin_this_year=nm_this,
+            net_margin_last_year=nm_last,
+            unit=unit,
+        )
+        return answer, [], [], "financial_metrics", None
+
+    if tool == "parse_dates_from_text":
+        text = (tool_args.get("text") or question).strip()
+        answer = parse_dates_from_text(text)
+        return answer, [], [], "parse_dates_from_text", None
+
+    if tool == "generate_quarterly_plan":
+        topic = (tool_args.get("topic") or "計畫").strip()
+        start_q = (tool_args.get("start_quarter") or "2025Q1").strip()
+        num_q = tool_args.get("num_quarters")
+        try:
+            num_q = int(num_q) if num_q is not None else 4
+        except (TypeError, ValueError):
+            num_q = 4
+        num_q = max(1, min(num_q, 8))
+        answer = generate_quarterly_plan(topic=topic, start_quarter=start_q, num_quarters=num_q)
+        return answer, [], [], "generate_quarterly_plan", None
+
+    if tool == "financial_report_agent":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = financial_report_agent(
+            question=question, top_k=top_k_expert, history=history
+        )
+        return answer, sources, chunks, "financial_report_agent", None
+
+    if tool == "esg_agent":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = esg_agent(
+            question=question, top_k=top_k_expert, history=history
+        )
+        return answer, sources, chunks, "esg_agent", None
+
+    if tool == "data_analyst_agent":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = data_analyst_agent(
+            question=question, top_k=top_k_expert, history=history
+        )
+        return answer, sources, chunks, "data_analyst_agent", None
+
+    if tool == "rag_search":
+        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False)
+        answer = rag_state.get("answer", "") or ""
+        sources = rag_state.get("sources", []) or []
+        chunks = rag_state.get("chunks", []) or []
+        return answer, sources, chunks, "rag_search", None
+
+    if tool == "research":
+        # Research Agent：先 RAG，信心低或無結果再補網搜，最後 LLM 整合並標註來源
+        client, llm_model = _init_llm_client()
+        context_rag, sources_rag, chunks_rag, top_score = retrieve_only(question=question, top_k=top_k)
+        threshold = float(os.getenv("RESEARCH_WEB_SCORE_THRESHOLD", "0.35"))
+        need_web = (not chunks_rag) or (
+            top_score is not None and top_score < threshold
+        )
+        context_web = _web_search(question, max_results=8) if need_web else ""
+
+        system = (
+            "你是一個研究助理，負責整合「知識庫檢索」與「網路搜尋」的結果回答問題。\n"
+            "規則：\n"
+            "1) 以知識庫內容為主；若有網路搜尋結果，可補足或對照。\n"
+            "2) 在回答中明確標註哪些來自「知識庫」、哪些來自「網路」；若只有一方有內容，也請註明。\n"
+            "3) 若有引用，請在句末或段落註明來源類型（知識庫 / 網路）。\n"
+            "4) 若兩邊都沒有足夠內容，請誠實說明無法回答。"
+        )
+        parts = ["## 問題\n" + question, "\n## 知識庫檢索結果\n" + (context_rag or "(無)")]
+        if context_web:
+            parts.append("\n## 網路搜尋結果\n" + context_web)
+        prompt = "\n".join(parts) + "\n\n請整合以上內容回答問題，並標註來源（知識庫 vs 網路）："
+        out = client.models.generate_content(
+            model=llm_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=system),
+        )
+        answer = (out.text or "").strip()
+        return answer, sources_rag, chunks_rag, "research", None
+
+    if tool == "list_sources":
+        filter_chat_id = tool_args.get("chat_id") or chat_id
+        entries = list_sources(chat_id=filter_chat_id)
+        if not entries:
+            answer = "目前沒有已灌入的來源。"
+        else:
+            lines = [f"- **{e.get('source', '?')}**（{e.get('chunk_count', 0)} 個片段）" for e in entries]
+            answer = "知識庫來源如下：\n\n" + "\n".join(lines)
+        return answer, [], [], "list_sources", None
+
+    if tool == "search_similar":
+        query = (tool_args.get("query") or question).strip()
+        sim_top_k = int(tool_args.get("top_k") or top_k)
+        sim_top_k = min(max(sim_top_k, 1), 20)
+        sources, chunks = search_similar(query_text=query, top_k=sim_top_k)
+        if not chunks:
+            answer = "未找到與這段話相關的段落。"
+        else:
+            blocks = [f"**[{c['tag']}]**\n{c['text']}" for c in chunks]
+            answer = "找到以下相關段落：\n\n" + "\n\n---\n\n".join(blocks)
+        return answer, sources, chunks, "search_similar", None
+
+    if tool == "summarize_source":
+        source = (tool_args.get("source") or question).strip()
+        max_chunks = int(tool_args.get("max_chunks") or 50)
+        max_chunks = min(max(max_chunks, 1), 100)
+        answer = summarize_source(source=source, max_chunks=max_chunks)
+        return answer, [], [], "summarize_source", None
+
+    if tool == "web_search":
+        query = (tool_args.get("query") or question).strip()
+        max_results = min(max(int(tool_args.get("max_results") or 8), 1), 20)
+        answer = _web_search(query=query, max_results=max_results)
+        return answer, [], [], "web_search", None
+
+    if tool == "scrape_url":
+        url = (tool_args.get("url") or "").strip() or _extract_url_from_text(question)
+        if not url:
+            answer = "未提供網址。請在問題中貼上 URL，或使用 tool_args 傳入 {\"url\": \"https://...\"}。"
+            return answer, [], [], "scrape_url", None
+        only_main = bool(tool_args.get("only_main_content", True))
+        raw = scrape_url(url, only_main_content=only_main)
+        answer = _format_firecrawl_scrape_result(raw)
+        return answer, [], [], "scrape_url", None
+
+    if tool == "firecrawl_search":
+        query = (tool_args.get("query") or question).strip()
+        if not query:
+            answer = "請提供搜尋關鍵字（或在問題中寫明要搜尋的內容）。"
+            return answer, [], [], "firecrawl_search", None
+        limit = min(max(int(tool_args.get("limit") or 5), 1), 10)
+        raw = search_and_scrape(query, limit=limit)
+        if isinstance(raw, str) and ("未設定" in raw or "失敗" in raw):
+            answer = raw
+        elif isinstance(raw, dict):
+            data = raw.get("data") if isinstance(raw.get("data"), list) else raw.get("results")
+            if data:
+                parts = []
+                for i, item in enumerate(data, 1):
+                    if isinstance(item, dict):
+                        meta = item.get("metadata") or {}
+                        title = item.get("title") or meta.get("title") or "（無標題）"
+                        url_h = item.get("url") or meta.get("source") or ""
+                        md = item.get("markdown") or item.get("content") or ""
+                        parts.append(f"## [{i}] {title}\n{url_h}\n\n{md[:4000]}{'…' if len(str(md)) > 4000 else ''}")
+                    else:
+                        parts.append(str(item)[:2000])
+                answer = "\n\n---\n\n".join(parts)
+            else:
+                answer = _format_firecrawl_scrape_result(raw)
+        else:
+            answer = _format_firecrawl_scrape_result(raw)
+        return answer, [], [], "firecrawl_search", None
+
+    # small_talk 路徑：純 LLM 對話，不查知識庫
+    client, llm_model = _init_llm_client()
+    history_blocks: list[str] = []
+    for turn in history[-10:]:
+        role = turn.get("role", "user")
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        label = "使用者" if role == "user" else "助理"
+        history_blocks.append(f"{label}：{content}")
+    history_text = "\n".join(history_blocks)
+
+    system = (
+        "你是一個友善的中文助理，負責一般對話、說明與簡單推理。\n"
+        "這個模式下你不需要引用公司內部文件，只要根據對話歷史與一般常識回答即可。\n"
+        "若問題明顯需要公司內部資料才能準確回答，請先說明你只能根據一般知識推估。"
+    )
+
+    if history_text:
+        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}"
+    else:
+        prompt = f"## 問題\n{question}"
+
+    out = client.models.generate_content(
+        model=llm_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=system),
+    )
+    answer = (out.text or "").strip()
+    return answer, [], [], "small_talk", None
+

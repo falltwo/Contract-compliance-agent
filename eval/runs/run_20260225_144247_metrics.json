@@ -1,0 +1,8 @@
+{
+  "routing_accuracy": 28.0,
+  "routing_accuracy_n": 25,
+  "tool_success_rate": 36.0,
+  "latency_p50_sec": 2.068,
+  "latency_p95_sec": 7.718,
+  "total": 25
+}
