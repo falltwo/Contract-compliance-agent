@@ -12,7 +12,12 @@ from google.genai import types
 
 from company_tools import financial_metrics, generate_quarterly_plan, parse_dates_from_text
 from echarts_mcp_client import call_echarts_mcp, use_echarts_mcp
-from expert_agents import data_analyst_agent, esg_agent, financial_report_agent
+from expert_agents import (
+    contract_risk_agent,
+    data_analyst_agent,
+    esg_agent,
+    financial_report_agent,
+)
 from echarts_tools import create_chart_option
 from firecrawl_tools import scrape_url, search_and_scrape
 from rag_graph import retrieve_only, run_rag, search_similar, summarize_source
@@ -38,6 +43,7 @@ SUPPORTED_TOOLS = frozenset({
     "financial_report_agent",
     "esg_agent",
     "data_analyst_agent",
+    "contract_risk_agent",
 })
 
 
@@ -340,6 +346,7 @@ def _decide_tool(
         "16) financial_report_agent → 問題明顯是「財報、營收、毛利、淨利、法說會、公司營運、EPS、現金流」等；交給財報專家子 Agent 回答，強調指標說明與風險提示，tool_args 可為 {}。\n"
         "17) esg_agent → 問題明顯是「ESG、環境社會治理、訴訟、供應鏈風險、法遵、裁罰、風險揭露」等；交給 ESG／風險法遵專家子 Agent 回答，tool_args 可為 {}。\n"
         "18) data_analyst_agent → 使用者要「分析這份資料、報表摘要、數據趨勢、從內容裡整理數字」等；交給資料分析專家，依檢索內容做數據摘要與重點發現，tool_args 可為 {}。\n"
+        "19) contract_risk_agent → 問題明顯是在「審閱合約、採購文件、標案文件、政府採購、契約條款風險」等；交給合約／採購法遵專家子 Agent，輸出條款類型、風險等級與建議調整方向，tool_args 可為 {}。\n"
         "請嚴格輸出一段 JSON，格式例如：\n"
         '  {\"tool\": \"rag_search\", \"tool_args\": {}}\n'
         "或 {\"tool\": \"research\", \"tool_args\": {}}\n"
@@ -355,6 +362,7 @@ def _decide_tool(
         "或 {\"tool\": \"financial_report_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"esg_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"data_analyst_agent\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"contract_risk_agent\", \"tool_args\": {}}\n"
         "禁止輸出任何解釋文字或多餘內容。"
     )
 
@@ -596,6 +604,13 @@ def route_and_answer(
             question=question, top_k=top_k_expert, history=history
         )
         return answer, sources, chunks, "data_analyst_agent", None
+
+    if tool == "contract_risk_agent":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = contract_risk_agent(
+            question=question, top_k=top_k_expert, history=history
+        )
+        return answer, sources, chunks, "contract_risk_agent", None
 
     if tool == "rag_search":
         rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False)
