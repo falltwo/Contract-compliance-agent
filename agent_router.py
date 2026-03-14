@@ -12,7 +12,12 @@ from google.genai import types
 
 from company_tools import financial_metrics, generate_quarterly_plan, parse_dates_from_text
 from echarts_mcp_client import call_echarts_mcp, use_echarts_mcp
-from expert_agents import contract_risk_agent, data_analyst_agent, esg_agent, financial_report_agent
+from expert_agents import (
+    contract_risk_agent,
+    data_analyst_agent,
+    esg_agent,
+    financial_report_agent,
+)
 from echarts_tools import create_chart_option
 from firecrawl_tools import scrape_url, search_and_scrape
 from rag_graph import retrieve_only, run_rag, search_similar, summarize_source
@@ -39,6 +44,8 @@ SUPPORTED_TOOLS = frozenset({
     "esg_agent",
     "data_analyst_agent",
     "contract_risk_agent",
+    "tw_law_web_search",
+    "contract_risk_with_law_search",
 })
 
 
@@ -102,6 +109,48 @@ def firecrawl_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
     return None
 
 
+# ---------- 台灣法律／司法院檢索意圖（強制走 tw_law_web_search，確保會用網路搜尋）----------
+_TW_LAW_PHRASES = (
+    "司法院法學資料檢索",
+    "法學資料檢索系統",
+    "lawsearch.judicial",
+    "judicial.gov.tw",
+    "搜尋司法院",
+    "去搜尋司法院",
+    "查司法院",
+    "查詢.*法律條",
+    "查法律條文",
+    "查.*法第.*條",
+    "根據文件.*條例",
+    "根據文件.*法條",
+)
+
+
+def tw_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
+    """使用者明確要查司法院／法律條文時，強制走 tw_law_web_search，確保會用網路搜尋而非只查知識庫。"""
+    if not question or not question.strip():
+        return None
+    q = question.strip()
+    for phrase in _TW_LAW_PHRASES:
+        if re.search(phrase, q):
+            # 用整句當 query，tw_law_web_search 會再加 site:judicial.gov.tw
+            return ("tw_law_web_search", {"query": q})
+    return None
+
+
+def contract_risk_with_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
+    """使用者要「審閱合約」或「合約風險」時，優先走「合約＋法條查詢」整合流程，確保會查司法院並把外部連結列入來源。"""
+    if not question or not question.strip():
+        return None
+    q = question.strip()
+    # 審閱合約、合約風險、合約＋法條／法律 等一律走完整流程（合約 RAG ＋ 抽法條 ＋ 查司法院）
+    if "審閱" in q and "合約" in q:
+        return ("contract_risk_with_law_search", {})
+    if "合約" in q and ("風險" in q or "法條" in q or "法律" in q or "條文" in q or "民法" in q or "消保法" in q or "司法院" in q or "條例" in q):
+        return ("contract_risk_with_law_search", {})
+    return None
+
+
 def firecrawl_intent_with_llm(question: str) -> Tuple[str, Dict[str, Any]] | None:
     """當規則無法判斷時，用一次 LLM 只回答「要不要用 Firecrawl、用哪個、參數」。
     需設 FIRECRAWL_USE_LLM_GATE=1 才會被呼叫。回傳 (tool_name, tool_args) 或 None。
@@ -152,6 +201,156 @@ def _format_firecrawl_scrape_result(raw: Any, max_chars: int = 30000) -> str:
         if title:
             return f"# {title}\n\n(內容未擷取到 markdown，請檢查 API 回傳)"
     return str(raw)[:max_chars] + ("…" if len(str(raw)) > max_chars else "")
+
+
+# ---------- 合約審閱＋法條查詢流程：從合約抽出法條字號 → 查司法院 → 整合評估 ----------
+_LAW_REF_PATTERN = re.compile(
+    r"(民法|消費者保護法|消保法|政府採購法|行政程序法|民事訴訟法|刑事訴訟法|消防法|自來水法)"
+    r"\s*第\s*(\d+)\s*條(?:\s*第\s*\d+\s*項)?"
+)
+
+
+def _extract_law_refs_from_text(text: str) -> List[str]:
+    """從合約或檢索內容中抽出「法律名稱＋條號」，去重後回傳，用於後續查司法院。"""
+    if not text or not text.strip():
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for m in _LAW_REF_PATTERN.finditer(text):
+        name = (m.group(1) or "").strip()
+        num = (m.group(2) or "").strip()
+        if not name or not num:
+            continue
+        key = f"{name}第{num}條"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f"{name}第{num}條")
+    return out[:15]  # 最多查 15 條，避免過多 API 呼叫
+
+
+def _web_search_with_urls(query: str, max_results: int = 5) -> Tuple[str, List[str]]:
+    """呼叫 _web_search 並從回傳的 markdown 中擷取 URL 列表，回傳 (回答文字, URL 列表)。"""
+    text = _web_search(query=query, max_results=max_results)
+    urls = re.findall(r"\]\((https?://[^\)]+)\)", text)
+    return text, list(dict.fromkeys(urls))  # 保持順序去重
+
+
+def _contract_risk_with_law_search_impl(
+    question: str,
+    top_k: int,
+    history: List[Dict[str, Any]] | None,
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """
+    流程：1) RAG 取合約 2) 抽出法條字號 3) 逐條查司法院 4) 合併 context 後由 LLM 做風險評估。
+    回傳 (answer, sources, chunks)。sources 含合約 chunk 標籤＋外部 URL。
+    """
+    context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14))
+    if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
+        return (
+            "目前知識庫中沒有與合約相關的內容。請先上傳並灌入合約／採購文件，再使用「合約審閱（含法條查詢）」功能。",
+            [],
+            [],
+        )
+
+    law_refs = _extract_law_refs_from_text(context_rag)
+    law_sections: List[str] = []
+    web_urls: List[str] = []
+    for ref in law_refs:
+        q = f"{ref} site:judicial.gov.tw"
+        block, urls = _web_search_with_urls(q, max_results=4)
+        if block and "無法使用網路搜尋" not in block:
+            law_sections.append(f"### {ref}\n{block}")
+            web_urls.extend(urls)
+    # 若合約中未抽出具體法條字號，仍用「成屋買賣／定型化契約＋民法／消保法」做後備查詢，讓外部連結有機會出現
+    if not law_refs and not web_urls:
+        for fallback_query in ("成屋買賣 民法 定型化契約 site:judicial.gov.tw", "成屋買賣 消費者保護法 site:judicial.gov.tw"):
+            block, urls = _web_search_with_urls(fallback_query, max_results=3)
+            if block and "無法使用網路搜尋" not in block:
+                law_sections.append(f"### 相關法規與實務\n{block}")
+                web_urls.extend(urls)
+            if len(law_sections) >= 2:
+                break
+
+    combined_context = "## 合約檢索內容（知識庫）\n\n" + context_rag
+    if law_sections:
+        combined_context += "\n\n## 查詢到的相關條文與實務見解（司法院／網路）\n\n" + "\n\n".join(law_sections)
+    else:
+        combined_context += "\n\n## 查詢到的相關條文\n（未設定 TAVILY_API_KEY 或未找到對應條文，僅依合約內容評估。）"
+    if web_urls:
+        combined_context += "\n\n## 本次查詢使用之外部連結（請在回答的「來源列表」中一併列出）\n" + "\n".join(f"- {u}" for u in web_urls)
+
+    system = (
+        "你是合約與法遵輔助審閱專家。請**嚴格根據**以下兩部分內容做風險評估：\n"
+        "1) **合約檢索內容**：來自使用者上傳的合約／文件。\n"
+        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋。\n\n"
+        "請依序產出：\n"
+        "**一、合約條款風險摘要**：條列本合約中對買方／我方可能不利的條款，並註明對應的合約來源（如 [chunkX]）。\n"
+        "**二、相關法條重點**：對照上面「查詢到的相關條文」節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋。\n"
+        "**三、風險提醒與建議**：綜合合約與法條，說明應注意的風險與可考慮的調整方向（勿自行推算具體金額）。\n"
+        "**四、本合約提及之法律字號清單**：列出檢索內容中出現的所有法律名稱與條號。\n\n"
+        "**五、來源列表**：必須分兩部分寫清楚：(1) 合約來源（列出上述用到的 PDF chunk，如 uploaded/.../xxx.pdf#chunk0）；(2) 外部連結（逐條列出「本次查詢使用之外部連結」區塊中的 URL，不可省略）。\n\n"
+        "最後加一句：\n"
+        "「本分析僅供內部風險初步檢視與參考，不能視為正式法律意見，重要合約仍應由執業律師審閱。」"
+    )
+    history_text = ""
+    if history:
+        blocks = []
+        for t in history[-4:]:
+            role = t.get("role", "user")
+            content = (t.get("content") or "").strip()
+            if not content:
+                continue
+            label = "使用者" if role == "user" else "助理"
+            blocks.append(f"{label}：{content}")
+        history_text = "\n".join(blocks)
+
+    if history_text:
+        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
+    else:
+        prompt = f"## 問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
+
+    client, model = _init_llm_client()
+    out = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=system),
+    )
+    answer = (out.text or "").strip()
+
+    # 多一層 AI 自檢：以「回答＋來源摘要」請 LLM 驗證是否與來源一致，並產出簡短自檢結果附於文末供參考
+    try:
+        context_for_check = context_rag[:4500] + ("…" if len(context_rag) > 4500 else "")
+        law_joined = "\n".join(law_sections) if law_sections else ""
+        law_for_check = (law_joined[:3500] + ("…" if len(law_joined) > 3500 else "")) if law_joined else "（無外部法條內容）"
+        verify_system = (
+            "你是品質檢核員，只根據「風險評估回答」與「合約檢索摘要」「法條摘要」做一致性檢查。\n"
+            "請用以下結構產出簡短自檢結果（每項一至三句話為限）：\n"
+            "**1. 與合約檢索內容一致性**：回答中的條款描述、chunk 引用是否與合約摘要相符？若有未對應到來源的敘述請註明。\n"
+            "**2. 與法條／實務見解一致性**：回答中引用的法條或實務見解是否與下方法條摘要一致？有無過度推論或與法條明顯矛盾之處？\n"
+            "**3. 建議人工再確認之處**：列出建議法務或使用者再核對的項目（例如：具體金額、條號、責任歸屬）。\n"
+            "若整體一致、無明顯矛盾，也請簡要說明。禁止輸出與自檢無關的內容。"
+        )
+        verify_prompt = (
+            "## 風險評估回答（待驗證）\n\n" + (answer[:6000] + "…" if len(answer) > 6000 else answer)
+            + "\n\n## 合約檢索內容摘要（供對照）\n\n" + context_for_check
+            + "\n\n## 法條／實務見解摘要（供對照）\n\n" + law_for_check
+            + "\n\n請依指示產出上述自檢結果："
+        )
+        verify_out = client.models.generate_content(
+            model=model,
+            contents=verify_prompt,
+            config=types.GenerateContentConfig(system_instruction=verify_system),
+        )
+        verify_text = (verify_out.text or "").strip()
+        if verify_text:
+            answer += "\n\n---\n\n**【AI 自檢】**\n\n" + verify_text + "\n\n*以上自檢僅供參考，不取代人工覆核與律師意見。*"
+    except Exception as e:
+        logger.warning("contract_risk_with_law_search: AI 自檢步驟失敗，略過: %s", e, exc_info=True)
+        answer += "\n\n---\n\n**【AI 自檢】**\n（本次自檢未執行或執行失敗，建議人工核對上述內容與來源。）"
+
+    sources = list(sources_rag) + web_urls
+    return answer, sources, chunks_rag
 
 
 def _web_search(query: str, max_results: int = 8) -> str:
@@ -341,7 +540,9 @@ def _decide_tool(
         "16) financial_report_agent → 問題明顯是「財報、營收、毛利、淨利、法說會、公司營運、EPS、現金流」等；交給財報專家子 Agent 回答，強調指標說明與風險提示，tool_args 可為 {}。\n"
         "17) esg_agent → 問題明顯是「ESG、環境社會治理、訴訟、供應鏈風險、法遵、裁罰、風險揭露」等；交給 ESG／風險法遵專家子 Agent 回答，tool_args 可為 {}。\n"
         "18) data_analyst_agent → 使用者要「分析這份資料、報表摘要、數據趨勢、從內容裡整理數字」等；交給資料分析專家，依檢索內容做數據摘要與重點發現，tool_args 可為 {}。\n"
-        "19) contract_risk_agent → 合約、採購、法遵審閱、條款、權利義務、罰則、違約、甲方乙方等；交給合約法遵專家，tool_args 可為 {}。\n"
+        "19) contract_risk_agent → 問題明顯是在「審閱合約、採購文件、標案文件、政府採購、契約條款風險」等；交給合約／採購法遵專家子 Agent，輸出條款類型、風險等級與建議調整方向，tool_args 可為 {}。\n"
+        "20) tw_law_web_search → 問題明顯是在詢問「適用的法律條文、臺灣民法／政府採購法／行政程序法等法規內容」，或提到「司法院法學資料檢索系統」「judicial.gov.tw」等，需上網查臺灣法律條文；會優先搜尋 judicial.gov.tw，tool_args 可含 {\"query\": \"關鍵字\"}。\n"
+        "21) contract_risk_with_law_search → 使用者要「審閱合約且結合法條查詢」「合約風險評估並查相關法條」；系統會先從知識庫取合約、抽出法條字號、再上網查司法院等來源、最後整合產出風險評估與法條重點，tool_args 可為 {}。\n"
         "請嚴格輸出一段 JSON，格式例如：\n"
         '  {\"tool\": \"rag_search\", \"tool_args\": {}}\n'
         "或 {\"tool\": \"research\", \"tool_args\": {}}\n"
@@ -358,6 +559,8 @@ def _decide_tool(
         "或 {\"tool\": \"esg_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"data_analyst_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"contract_risk_agent\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"tw_law_web_search\", \"tool_args\": {\"query\": \"政府採購法 第 99 條 專案管理\"}}\n"
+        "或 {\"tool\": \"contract_risk_with_law_search\", \"tool_args\": {}}\n"
         "禁止輸出任何解釋文字或多餘內容。"
     )
 
@@ -489,6 +692,16 @@ def route_and_answer(
         intent = firecrawl_intent_with_llm(question)
     if intent is not None:
         tool, tool_args = intent
+    # 台灣法律／司法院檢索意圖：明確要「搜尋司法院法學資料檢索系統」等時，強制走 tw_law_web_search，確保會用網路搜尋
+    if tool is None:
+        intent = tw_law_intent(question)
+        if intent is not None:
+            tool, tool_args = intent
+    # 合約審閱＋法條查詢：問題同時提到合約／審閱與法條／法律時，走「合約 RAG → 抽法條 → 查司法院 → 整合評估」
+    if tool is None:
+        intent = contract_risk_with_law_intent(question)
+        if intent is not None:
+            tool, tool_args = intent
     if tool is None:
         client, llm_model = _init_llm_client()
         tool, tool_args = _decide_tool(client, llm_model, question, history)
@@ -603,9 +816,16 @@ def route_and_answer(
     if tool == "contract_risk_agent":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = contract_risk_agent(
-            question=question, top_k=top_k_expert, history=history, strict=strict
+            question=question, top_k=top_k_expert, history=history
         )
         return answer, sources, chunks, "contract_risk_agent", None
+
+    if tool == "contract_risk_with_law_search":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = _contract_risk_with_law_search_impl(
+            question=question, top_k=top_k_expert, history=history
+        )
+        return answer, sources, chunks, "contract_risk_with_law_search", None
 
     if tool == "rag_search":
         rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False)
@@ -645,17 +865,8 @@ def route_and_answer(
         return answer, sources_rag, chunks_rag, "research", None
 
     if tool == "list_sources":
-        # 安全預設：只列出「本對話 chat_id」的來源，避免暴露整個知識庫的檔名/路徑。
-        # 若確實需要列出全庫來源，需在 .env 明確開啟 ALLOW_LIST_ALL_SOURCES=1，
-        # 且使用者問題包含「全部」或 tool_args 指定 all=true 才允許。
-        want_all = bool(tool_args.get("all")) or ("全部" in (question or ""))
-        allow_all = os.getenv("ALLOW_LIST_ALL_SOURCES", "").strip().lower() in ("1", "true", "yes")
-
-        if allow_all and want_all:
-            entries = list_sources(chat_id=None)
-        else:
-            filter_chat_id = tool_args.get("chat_id") or chat_id
-            entries = list_sources(chat_id=filter_chat_id)
+        filter_chat_id = tool_args.get("chat_id") or chat_id
+        entries = list_sources(chat_id=filter_chat_id)
         if not entries:
             answer = "目前沒有已灌入的來源。"
         else:
@@ -687,6 +898,15 @@ def route_and_answer(
         max_results = min(max(int(tool_args.get("max_results") or 8), 1), 20)
         answer = _web_search(query=query, max_results=max_results)
         return answer, [], [], "web_search", None
+
+    if tool == "tw_law_web_search":
+        # 針對臺灣法律／判決等問題，優先搜尋 judicial.gov.tw 網域（司法院法學資料檢索系統等）
+        query = (tool_args.get("query") or question).strip()
+        if query:
+            query = f"{query} site:judicial.gov.tw"
+        max_results = min(max(int(tool_args.get("max_results") or 8), 1), 20)
+        answer = _web_search(query=query, max_results=max_results)
+        return answer, [], [], "tw_law_web_search", None
 
     if tool == "scrape_url":
         url = (tool_args.get("url") or "").strip() or _extract_url_from_text(question)

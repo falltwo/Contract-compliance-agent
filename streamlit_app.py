@@ -267,7 +267,7 @@ def _render_eval_batch_view() -> None:
 
 def ingest_uploaded_files(
     *,
-    gemini: genai.Client,
+    embed_client: genai.Client,
     index: Any,
     index_dim: int,
     embed_model: str,
@@ -488,7 +488,7 @@ def main() -> None:
             try:
                 with st.spinner("向量化並寫入 Pinecone 中…（檔案越大越久）"):
                     n = ingest_uploaded_files(
-                        gemini=embed_client,
+                        embed_client=embed_client,
                         index=index,
                         index_dim=index_dim,
                         embed_model=embed_model,

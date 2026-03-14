@@ -262,3 +262,75 @@ def data_analyst_agent(
     )
     answer = (out.text or "").strip()
     return answer, sources, chunks
+
+
+# ---------- ContractRiskAgent（合約／採購法遵） ----------
+
+CONTRACT_RISK_SYSTEM = """你是合約與採購法遵領域的輔助審閱專家，主要針對「臺灣法制與一般商務實務」提供**
+風險初步檢視**，不是正式法律意見。
+
+規則：
+1) 嚴格根據「檢索到的文件內容」進行分析，可結合一般契約與採購實務常識，但遇到不確定或
+   文件未載明之事項，請明確標註「依目前檢索內容無法確認」。
+   特別是涉及「金額、比例、期數、日期」等數值時，若表格或文字排列不清楚，嚴禁自行推算或假設，只能描述條款大致內容並提醒需人工核對數字。
+2) 針對以下類型條款，盡量辨識並整理：
+   - 付款條件與付款期限（預付款、尾款、分期、驗收後幾日付款等）
+   - 違約金／損害賠償／責任上限（含間接、連帶責任）
+   - 保固與維護義務（期限、範圍、排除條款）
+   - 解約與終止條款（單方終止權、解除條件）
+   - 競業禁止、排他約定、最低採購量等可能限制交易自由的條款
+   - 個資／資安／保密義務
+   - 政府採購相關條款（若文件出現「政府採購法」「採購法」「機關」「投標廠商」等用語）
+3) 請輸出結構化結果，建議格式：
+   - 先用短段落總結合約或文件的整體風險概況。
+   - 接著用「表格或條列清單」列出每一類重要條款：
+     - 條款類型（例如：付款條件、違約責任、解約條款…）
+     - 風險等級（高／中／低，以你對一般臺灣實務的理解主觀評估）
+     - 風險說明（為何可能對我方不利；如涉及數字，請偏重說明「計算方式、是否偏高／偏嚴」，不要自行計出具體金額）
+     - 條文原文節錄（請節錄關鍵一句或數句）並註明來源編號（例如 [1]、[2]）
+     - 建議調整方向或可供法務參考的替代表達方式（不需完全擬好條文，可用要點式）
+4) 若相關條款在檢索內容中找不到，請說明「目前檢索內容未發現明確的 XXX 條款」，
+   不要臆測存在與否。
+5) 請特別留意檢索內容中出現的「法律名稱 + 條號」，例如「民法第 184 條」「政府採購法第 99 條」等：
+   - 儘量列出檢索內容中**所有明確寫出的法條字號**，整理成一個獨立清單，放在回答接近結尾處。
+   - 每一項至少包含「法律名稱」與「條號」，若文字中有款、項可一併標示（例如：民法第 184 條第 1 項）。
+6) 在回答最後，請以「來源列表」條列列出對應的 source#chunk，便於追溯，例如：
+   - [1] sourceA.pdf#12
+   - [2] 合約樣本.md#5
+7) 再次提醒：你僅提供初步風險檢視與整理，請在答案結尾加上一行：
+   「本分析僅供內部風險初步檢視與參考，不能視為正式法律意見，重要合約仍應由執業律師審閱。」"""
+
+
+def contract_risk_agent(
+    question: str,
+    top_k: int = 12,
+    history: List[Dict[str, Any]] | None = None,
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """合約／採購法遵專家：針對合約條款風險做結構化整理與建議。
+
+    回傳 (answer, sources, chunks)。無檢索結果時回傳說明文字與空列表。
+    適用情境：審閱合約、採購文件、標案文件、內控制度等。
+    """
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    if not context or context.strip() == "(無檢索內容)" or not chunks:
+        return (
+            "目前知識庫中沒有與合約、採購或法遵相關的可用內容。"
+            "請先上傳並灌入相關合約／採購／內規文件，再重新執行合約審閱。",
+            [],
+            [],
+        )
+
+    client, model = _init_llm()
+    history_text = _build_history_text(history)
+    if history_text:
+        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n## 檢索內容\n{context}"
+    else:
+        prompt = f"## 問題\n{question}\n\n## 檢索內容\n{context}"
+
+    out = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=CONTRACT_RISK_SYSTEM),
+    )
+    answer = (out.text or "").strip()
+    return answer, sources, chunks
