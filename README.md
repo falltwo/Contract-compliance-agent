@@ -54,6 +54,57 @@
 - [使用方式](#四使用方式)
 - [進階與備註](#五進階與備註)
 - [開發與測試](#六開發與測試)
+- [更新記錄（lawtools 分支）](#更新記錄lawtools-分支)
+
+---
+
+## 更新記錄（lawtools 分支）
+
+### 與 main 的關係
+
+**lawtools** 分支的**程式碼與 main 一致**，未對既有模組做改動。本分支用於在此基礎上進行的**爬蟲**與**法律條例調查**等更新工作，以下記錄在此分支實際使用的**程式更新流程**。
+
+### 本分支的更新工作內容
+
+- **爬蟲**：使用專案既有工具（如 **Firecrawl**：`scrape_url`、`search_and_scrape`、`crawl_site`、`map_domain`）擷取法規、判決或法務相關網頁，取得條文或說明文字。
+- **法律條例調查**：結合 RAG 知識庫、網路搜尋（Tavily）與網頁擷取（Firecrawl），對法規、條例、函釋等進行查詢與整理，並透過 Agent 路由決定用「知識庫檢索」或「即時擷取／搜尋」回答。
+- **Tools 擴充**：本分支若有新增或修改與法律／法遵相關的 tool 或專家 Agent，請在下方「本分支與 tools 相關的擴充」列出，以與 main 既有工具區分。
+
+#### 本分支與 tools 相關的擴充（請依實際新增項目填寫）
+
+若你在本分支有**新增或修改**任何 tool（例如法規查詢、條例檢索、法遵專家 Agent、自訂工具模組等），請在此列出，方便與 main 既有工具對照：
+
+| 類型 | 名稱／識別 | 檔案或模組 | 說明 |
+|------|------------|------------|------|
+| （範例）法規 tool | `law_search` | `law_tools.py` 或 `agent_router` 內擴充 | 查詢法規條文、函釋等 |
+| （範例）專家 Agent | `legal_agent` | `expert_agents.py` 或新模組 | 法遵／法務專家子 Agent |
+| *（請在此新增你實際加入的 tool／Agent）* | | | |
+
+- 若尚未 commit，可先在此填寫預定名稱與說明，之後補上對應程式再更新本表。
+- 既有 **SUPPORTED_TOOLS** 在 `agent_router.py`；若新增 tool，需在該處加入名稱並在路由與執行分支實作對應邏輯；`tools/__init__.py` 目前從 `agent_router.SUPPORTED_TOOLS` 匯出，無需重複註冊。
+
+### 程式更新流程（本分支實際使用）
+
+1. **環境與 API key**  
+   與 main 相同：`uv` + `.env`（含 `FIRECRAWL_API_KEY`、`GOOGLE_API_KEY`、`PINECONE_API_KEY`、`TAVILY_API_KEY` 等）。爬蟲與法規擷取需至少具備 Firecrawl（與必要時 Tavily）。
+
+2. **爬蟲擷取法規／條例來源**  
+   - **單頁**：用 `firecrawl_tools.scrape_url(url)` 擷取指定法規頁面，取得 Markdown 或文字。  
+   - **關鍵字／主題**：用 `firecrawl_tools.search_and_scrape(query, limit=…)` 搜尋並擷取多筆頁面（例如「某法 第幾條」、「某函釋」）。  
+   - **整站**：若有法規網站需整站爬取，用 `firecrawl_tools.crawl_site(start_url, limit=…)`（注意逾時與 API 用量）。  
+   擷取結果可存成檔案放入 `data/`，供後續灌入知識庫。
+
+3. **灌入知識庫**  
+   將擷取或整理好的法規／條例文件（txt、md、pdf）放入 `data/`，執行 `uv run rag_ingest.py` → 切 chunk、embed、寫入 Pinecone，更新 `sources_registry.json`。之後即可用 RAG 做「條例問答」。
+
+4. **法律條例調查（問答流程）**  
+   啟動 `uv run streamlit run streamlit_app.py`，在介面提問：  
+   - 若問題偏向「已知知識庫內的法規／條例」→ Agent 會選 `rag_search`／`research`，從 Pinecone 檢索後生成答案。  
+   - 若需「即時網路上的法規、函釋、判決」→ Agent 會選 `web_search` 或 `firecrawl_search`（擷取搜尋結果頁面），再回傳整理結果。  
+   流程與 main 相同：`agent_router.route_and_answer()` 依問題決定工具；**若你已在本分支新增法規／法遵相關 tool 或專家 Agent**（並已加入 `SUPPORTED_TOOLS` 與路由邏輯），Agent 會多出對應選項，請在上方「本分支與 tools 相關的擴充」表格中列出名稱與說明。
+
+5. **後續可擴充**  
+   若本分支後續新增「法規專用 tool」或「法遵／法務專家 Agent」，可在此節補上對應檔案與呼叫流程。
 
 ---
 
