@@ -24,102 +24,13 @@ from sources_registry import update_registry_on_ingest
 
 
 def _inject_custom_css() -> None:
-    """注入自訂 CSS：聊天氣泡、側欄層級、版面與動效，符合現代設計語彙。"""
-    st.markdown(
-        """
-        <style>
-        /* 主內容區：最大寬度與留白，提升可讀性 */
-        .block-container {
-            max-width: 900px;
-            padding-top: 1.5rem;
-            padding-bottom: 4rem;
-        }
-        /* 標題區下方留白 */
-        h1 {
-            letter-spacing: -0.02em;
-            font-weight: 700;
-            margin-bottom: 0.25rem !important;
-        }
-        /* 聊天訊息卡片：圓角、邊框、微陰影 */
-        [data-testid="stChatMessage"] {
-            padding: 1rem 1.25rem;
-            border-radius: 16px;
-            border: 1px solid rgba(148, 163, 184, 0.12);
-            background: rgba(30, 41, 59, 0.6);
-            margin-bottom: 0.75rem;
-            backdrop-filter: blur(8px);
-        }
-        [data-testid="stChatMessage"] p {
-            margin-bottom: 0.5em;
-        }
-        /* 使用者訊息靠右視覺區隔 */
-        [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-            margin-left: 2rem;
-            border-color: rgba(20, 184, 166, 0.25);
-            background: rgba(20, 184, 166, 0.06);
-        }
-        /* 側欄：區塊標題與分隔 */
-        [data-testid="stSidebar"] .stMarkdown {
-            margin-bottom: 0.25rem;
-        }
-        [data-testid="stSidebar"] h2 {
-            font-size: 0.95rem !important;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #94A3B8;
-            margin-top: 1.25rem;
-            margin-bottom: 0.5rem;
-        }
-        [data-testid="stSidebar"] hr {
-            margin: 1rem 0;
-            border-color: rgba(148, 163, 184, 0.15);
-        }
-        /* 按鈕：主色與圓角 */
-        [data-testid="stSidebar"] button {
-            border-radius: 10px;
-            font-weight: 500;
-        }
-        /* 展開器：較柔和邊框 */
-        [data-testid="stExpander"] {
-            border-radius: 12px;
-            border: 1px solid rgba(148, 163, 184, 0.12);
-            overflow: hidden;
-        }
-        [data-testid="stExpander"] summary {
-            font-weight: 500;
-        }
-        /* 輸入框與滑桿在側欄的視覺 */
-        [data-testid="stSidebar"] .stSlider label,
-        [data-testid="stSidebar"] .stCheckbox label {
-            font-size: 0.9rem;
-        }
-        /* 頁尾留白，避免輸入框擋住最後一則訊息 */
-        .stChatInput {
-            padding-bottom: 1rem;
-        }
-        /* 標題下方副標：編輯感 */
-        .app-tagline {
-            font-size: 0.95rem;
-            color: #94A3B8;
-            margin-bottom: 1.5rem;
-            font-weight: 400;
-        }
-        /* Eval 頁：指標卡片 */
-        [data-testid="stMetric"] {
-            background: rgba(30, 41, 59, 0.5);
-            padding: 1rem;
-            border-radius: 12px;
-            border: 1px solid rgba(148, 163, 184, 0.1);
-        }
-        [data-testid="stMetric"] label {
-            color: #94A3B8 !important;
-            font-size: 0.8rem !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """注入自訂 CSS：從 assets/custom.css 讀取，若無則不注入。"""
+    css_path = Path(__file__).resolve().parent / "assets" / "custom.css"
+    if css_path.is_file():
+        st.markdown(
+            f"<style>\n{css_path.read_text(encoding='utf-8')}\n</style>",
+            unsafe_allow_html=True,
+        )
 
 
 def _split_answer_and_refs(content: str) -> tuple[str, str | None]:
@@ -408,7 +319,7 @@ def ingest_uploaded_files(
         return 0
 
     vectors = embed_texts(
-        embed_client,
+        gemini,
         all_texts,
         model=embed_model,
         output_dimensionality=index_dim,
@@ -446,11 +357,6 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     _inject_custom_css()
-    st.title("Agent-DEMO")
-    st.markdown(
-        '<p class="app-tagline">RAG · 圖表 · 知識庫問答 · 多輪對話</p>',
-        unsafe_allow_html=True,
-    )
 
     try:
         chat_client, embed_client, index, index_dim, llm_model, embed_model, index_name = _cached_get_clients_and_index()
@@ -510,6 +416,18 @@ def main() -> None:
                 conversations[active_conv_id] = {"title": "新對話", "messages": []}
             st.rerun()
 
+    # 主標題；Eval 頁改為情境化小標，對話頁保留完整副標
+    st.title("Agent-DEMO")
+    if view == "對話":
+        st.markdown(
+            '<p class="app-tagline">RAG · 圖表 · 知識庫問答 · 多輪對話</p>',
+            unsafe_allow_html=True,
+        )
+    elif view == "Eval 運行記錄":
+        st.caption("檢視執行記錄")
+    elif view == "Eval 批次結果":
+        st.caption("檢視批次結果")
+
     if view == "Eval 運行記錄":
         _render_eval_view()
         return
@@ -525,7 +443,7 @@ def main() -> None:
         st.info("在下方輸入問題，或先展開「為此對話上傳並灌入文件」上傳 .txt / .md / .pdf 灌入知識庫後再問答。")
         st.markdown("")  # 小留白
 
-    # 整理給模型用的對話歷史（只保留 role + content）
+    # 整理給模型用的對話歷史（只保留 role + content），傳入 RAG/專家以記得上下文
     history_for_model: list[dict[str, Any]] = []
     for i, msg in enumerate(current_conv["messages"]):
         role = msg.get("role")
@@ -589,6 +507,10 @@ def main() -> None:
         return
 
     current_conv["messages"].append({"role": "user", "content": question})
+    # 第一則使用者問題時，將對話標題設為問題前 20 字
+    if current_conv.get("title") == "新對話" and len(current_conv["messages"]) == 1:
+        q = (question or "").strip()
+        current_conv["title"] = (q[:20] + ("…" if len(q) > 20 else "")) or "新對話"
     with st.chat_message("user"):
         st.markdown(question)
 

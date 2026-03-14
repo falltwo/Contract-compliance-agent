@@ -12,7 +12,7 @@ from google.genai import types
 
 from company_tools import financial_metrics, generate_quarterly_plan, parse_dates_from_text
 from echarts_mcp_client import call_echarts_mcp, use_echarts_mcp
-from expert_agents import data_analyst_agent, esg_agent, financial_report_agent
+from expert_agents import contract_risk_agent, data_analyst_agent, esg_agent, financial_report_agent
 from echarts_tools import create_chart_option
 from firecrawl_tools import scrape_url, search_and_scrape
 from rag_graph import retrieve_only, run_rag, search_similar, summarize_source
@@ -38,6 +38,7 @@ SUPPORTED_TOOLS = frozenset({
     "financial_report_agent",
     "esg_agent",
     "data_analyst_agent",
+    "contract_risk_agent",
 })
 
 
@@ -340,6 +341,7 @@ def _decide_tool(
         "16) financial_report_agent → 問題明顯是「財報、營收、毛利、淨利、法說會、公司營運、EPS、現金流」等；交給財報專家子 Agent 回答，強調指標說明與風險提示，tool_args 可為 {}。\n"
         "17) esg_agent → 問題明顯是「ESG、環境社會治理、訴訟、供應鏈風險、法遵、裁罰、風險揭露」等；交給 ESG／風險法遵專家子 Agent 回答，tool_args 可為 {}。\n"
         "18) data_analyst_agent → 使用者要「分析這份資料、報表摘要、數據趨勢、從內容裡整理數字」等；交給資料分析專家，依檢索內容做數據摘要與重點發現，tool_args 可為 {}。\n"
+        "19) contract_risk_agent → 合約、採購、法遵審閱、條款、權利義務、罰則、違約、甲方乙方等；交給合約法遵專家，tool_args 可為 {}。\n"
         "請嚴格輸出一段 JSON，格式例如：\n"
         '  {\"tool\": \"rag_search\", \"tool_args\": {}}\n'
         "或 {\"tool\": \"research\", \"tool_args\": {}}\n"
@@ -355,6 +357,7 @@ def _decide_tool(
         "或 {\"tool\": \"financial_report_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"esg_agent\", \"tool_args\": {}}\n"
         "或 {\"tool\": \"data_analyst_agent\", \"tool_args\": {}}\n"
+        "或 {\"tool\": \"contract_risk_agent\", \"tool_args\": {}}\n"
         "禁止輸出任何解釋文字或多餘內容。"
     )
 
@@ -597,6 +600,13 @@ def route_and_answer(
         )
         return answer, sources, chunks, "data_analyst_agent", None
 
+    if tool == "contract_risk_agent":
+        top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
+        answer, sources, chunks = contract_risk_agent(
+            question=question, top_k=top_k_expert, history=history, strict=strict
+        )
+        return answer, sources, chunks, "contract_risk_agent", None
+
     if tool == "rag_search":
         rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False)
         answer = rag_state.get("answer", "") or ""
@@ -635,8 +645,17 @@ def route_and_answer(
         return answer, sources_rag, chunks_rag, "research", None
 
     if tool == "list_sources":
-        filter_chat_id = tool_args.get("chat_id") or chat_id
-        entries = list_sources(chat_id=filter_chat_id)
+        # 安全預設：只列出「本對話 chat_id」的來源，避免暴露整個知識庫的檔名/路徑。
+        # 若確實需要列出全庫來源，需在 .env 明確開啟 ALLOW_LIST_ALL_SOURCES=1，
+        # 且使用者問題包含「全部」或 tool_args 指定 all=true 才允許。
+        want_all = bool(tool_args.get("all")) or ("全部" in (question or ""))
+        allow_all = os.getenv("ALLOW_LIST_ALL_SOURCES", "").strip().lower() in ("1", "true", "yes")
+
+        if allow_all and want_all:
+            entries = list_sources(chat_id=None)
+        else:
+            filter_chat_id = tool_args.get("chat_id") or chat_id
+            entries = list_sources(chat_id=filter_chat_id)
         if not entries:
             answer = "目前沒有已灌入的來源。"
         else:

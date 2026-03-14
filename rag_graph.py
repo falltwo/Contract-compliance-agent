@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -27,6 +28,76 @@ class RAGState(TypedDict):
     answer: str
     history: List[dict[str, Any]]
     strict: bool
+    packaged_context: str  # 調查員（法務檢索專家）產出，供判官使用
+
+
+# 生成回答時只取最近 N 輪對話，避免過長歷史吃滿 context 並維持「記得上下文」效果
+MAX_HISTORY_TURNS = int(os.getenv("RAG_MAX_HISTORY_TURNS", "12"))
+
+# 雙 Prompt 架構：調查員（RAG 先打包）→ 判官（主 Agent 再判定）
+
+# Prompt 1 — 調查員（法務檢索專家）：只輸出打包脈絡，不產出風險判定
+_INVESTIGATOR_SYSTEM = """# Role
+你是一個專為「資深合約審查 Agent」提供精準證據與脈絡的「法務檢索專家」。你的任務是從知識庫中精準提取與當前合約條款高度相關的資訊。
+
+# Alignment Rules
+1. 支援交叉比對：若分析「管轄法院」須同時檢索「雙方公司登記地址」；若分析「智財權歸屬」須同時檢索「付款條件」。
+2. 支援模糊字眼：若條文有「重大瑕疵」「合理時間」，須檢索客觀定義或業界 SLA 作為參考底線。
+3. 支援極端情境：違約／解約條款須優先檢索「損害賠償上限」「退款比例計算」之爭議案例或防禦條款。
+
+# Output
+請將檢索到的資訊打包，清晰區分為「原始條文脈絡」與「知識庫參考依據」。若欠缺某類脈絡請註明「檢索內容中未含 OOO 脈絡」。只輸出打包內容，不要輸出風險判定或審查結論。"""
+
+# Prompt 2 — 判官（主 Agent）：僅依調查員提供的脈絡做風險判定
+_JUDGE_SYSTEM_STRICT = """你是一個極度嚴謹的「合約法遵審閱助理」（判官），只能根據「調查員」提供的「原始條文脈絡」與「知識庫參考依據」以及「對話歷史」進行分析。
+規則：1) 結合對話歷史準確理解目前問題所指條款、主體（甲方/乙方）或採購標的。2) 若脈絡未提及相關細節，請直接回答「檢索資料中未包含此細節」，嚴禁虛構。3) 回答須含【條款類型】【具體內容描述】【風險標註】【原文引述】。4) 關鍵處用 [1]、[2] 標註來源，文末列出 (source#chunk)。"""
+
+_JUDGE_SYSTEM_ADVISOR = """你是一個專業的「合約審閱顧問」（判官），優先根據「調查員」提供的脈絡與「對話歷史」回答，可輔以法務常識。
+規則：1) 結合對話歷史確認詢問的是哪一份合約或哪一項權利義務。2) 脈絡不足時可補充法律常識但須註明「此部分為法律常識補充，非該合約原文」。3) 以表格或條列呈現條款對比。4) 引用處標註 [編號]，文末列出 (source#chunk)。"""
+
+# 多查詢檢索：產生輔助問句以補足交叉比對脈絡（如管轄法院 + 雙方地址）
+_AUX_QUERIES_SYSTEM = """你是合約檢索輔助專家。根據「主問句」產出 1～3 個簡短的「輔助檢索問句」，用來從知識庫補足交叉比對所需的脈絡。例如：主問句為「管轄法院」時，輔助問句可含「雙方公司登記地址」「立約人地址」；主問句為「智財權歸屬」時，可含「付款條件」「原始碼交付」。只輸出 JSON 陣列，例如 ["雙方登記地址", "付款條件"]，不要其他說明。"""
+
+
+def _match_key(m: dict[str, Any]) -> tuple[str, int | None]:
+    """用於合併多查詢結果時的去重鍵：(source, chunk_index) 或 (id, 0)。"""
+    meta = m.get("metadata") or {}
+    sid = m.get("id")
+    if sid:
+        return (str(sid), 0)
+    return (str(meta.get("source", "")), meta.get("chunk_index"))
+
+
+def _generate_auxiliary_queries(
+    chat_client: Any,
+    llm_model: str,
+    main_query: str,
+    max_queries: int = 3,
+) -> list[str]:
+    """依主問句產出 1～max 個輔助檢索問句，供多查詢檢索合併脈絡。失敗或空則回傳空列表。"""
+    if not (main_query or "").strip():
+        return []
+    prompt = f"主問句：{main_query.strip()}\n請輸出輔助檢索問句的 JSON 陣列："
+    try:
+        out = chat_client.models.generate_content(
+            model=llm_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=_AUX_QUERIES_SYSTEM),
+        )
+        text = (out.text or "").strip()
+        # 嘗試解析 JSON 陣列
+        if "[" in text:
+            start, end = text.index("["), text.rindex("]") + 1
+            arr = json.loads(text[start:end])
+        else:
+            arr = json.loads(text)
+        if not isinstance(arr, list):
+            return []
+        queries = [str(q).strip() for q in arr if q and str(q).strip()][:max_queries]
+        return queries
+    except Exception as e:
+        logger.warning("Auxiliary queries generation failed: %s", e)
+        return []
 
 
 def _init_clients_and_index() -> tuple[Any, genai.Client, Any, int, str, str, str]:
@@ -206,6 +277,46 @@ def _rerank_with_llm(
 
 _GRAPH = None
 
+# Query Rewriting：依對話歷史將短問／代名詞問題改寫成完整檢索問句
+_QUERY_REWRITE_SYSTEM = (
+    "你是一個專注於合約法遵的檢索問句重寫專家。請根據提供的「對話歷史」，將使用者最新的「簡短或具代名詞的問題（如：那延期呢？、這條的罰則是什麼？）」改寫成一個完整、獨立且適合用於向量檢索的查詢語句（例如：這份合約中關於付款延期的罰則是什麼？）。如果原問題已經很完整，請直接輸出原問題。請只輸出重寫後的問句，不要加上任何解釋。"
+)
+
+
+def _rewrite_query_for_retrieval(
+    chat_client: Any,
+    llm_model: str,
+    question: str,
+    history: list[dict[str, Any]],
+) -> str:
+    """依對話歷史用 LLM 將目前問題改寫成適合向量檢索的完整問句；失敗或空則回傳原 question。"""
+    if not (question or "").strip():
+        return question or ""
+    history = history[-MAX_HISTORY_TURNS:]
+    history_blocks: list[str] = []
+    for turn in history:
+        role = turn.get("role", "user")
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        label = "使用者" if role == "user" else "助理"
+        history_blocks.append(f"{label}：{content}")
+    history_text = "\n".join(history_blocks)
+    if not history_text.strip():
+        return (question or "").strip()
+    prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題（請改寫成完整檢索問句）\n{question}"
+    try:
+        out = chat_client.models.generate_content(
+            model=llm_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(system_instruction=_QUERY_REWRITE_SYSTEM),
+        )
+        rewritten = (out.text or "").strip()
+        return rewritten if rewritten else (question or "").strip()
+    except Exception as e:
+        logger.warning("Query rewrite failed, using original question: %s", e)
+        return (question or "").strip()
+
 
 def _build_graph():
     global _GRAPH
@@ -220,19 +331,59 @@ def _build_graph():
         history = state.get("history", [])
         strict = bool(state.get("strict", False))
 
+        # Query Rewriting：依對話歷史用 LLM 將短問／代名詞改寫成完整檢索問句（RAG_USE_HISTORY_FOR_QUERY=1 建議開啟）
+        query_for_embed = question
+        if os.getenv("RAG_USE_HISTORY_FOR_QUERY", "").strip().lower() in ("1", "true", "yes") and history:
+            query_for_embed = _rewrite_query_for_retrieval(
+                chat_client, llm_model, question, history
+            )
+
+        internal_top_k = max(top_k, int(os.getenv("RAG_INTERNAL_TOP_K", "20")))
+        aux_top_k = int(os.getenv("RAG_AUX_QUERY_TOP_K", "8"))
+        aux_max = int(os.getenv("RAG_AUX_QUERY_MAX", "3"))
+        use_multi_query = os.getenv("RAG_MULTI_QUERY", "").strip().lower() in ("1", "true", "yes")
+
         qvec = _embed_query_common(
             embed_client,
-            question,
+            query_for_embed,
             model=embed_model,
             output_dimensionality=index_dim,
         )
-
-        # 內部實際檢索的 top_k，預設至少抓 20 筆，方便後續用 LLM rerank
-        # 未來若有專有名詞、數字、法規條號等「精確匹配」需求，可在此改為 hybrid：
-        # 例如 RAG_USE_HYBRID=1 時併用向量 + 關鍵字/BM25，再合併結果做 rerank。
-        internal_top_k = max(top_k, int(os.getenv("RAG_INTERNAL_TOP_K", "20")))
         res = index.query(vector=qvec, top_k=internal_top_k, include_metadata=True)
-        raw_matches = res.get("matches", []) or []
+        raw_matches: list[dict[str, Any]] = list(res.get("matches", []) or [])
+        seen_keys: set[tuple[str, int | None]] = {_match_key(m) for m in raw_matches}
+
+        # 多查詢檢索：依主問句產出輔助問句（如「雙方地址」「付款條件」），再檢索並合併，以補足交叉比對脈絡
+        if use_multi_query and query_for_embed.strip():
+            aux_queries = _generate_auxiliary_queries(
+                chat_client, llm_model, query_for_embed, max_queries=aux_max
+            )
+            for aux_q in aux_queries:
+                if not aux_q:
+                    continue
+                try:
+                    qvec_aux = _embed_query_common(
+                        embed_client,
+                        aux_q,
+                        model=embed_model,
+                        output_dimensionality=index_dim,
+                    )
+                    res_aux = index.query(vector=qvec_aux, top_k=aux_top_k, include_metadata=True)
+                    for m in res_aux.get("matches", []) or []:
+                        k = _match_key(m)
+                        if k not in seen_keys:
+                            seen_keys.add(k)
+                            raw_matches.append(m)
+                except Exception as e:
+                    logger.warning("Auxiliary query failed for %r: %s", aux_q, e)
+            # 合併後依 score 排序，只保留前 N 筆以控制 rerank 成本（預設 2*internal_top_k）
+            merge_cap = int(os.getenv("RAG_MERGE_CAP", str(2 * internal_top_k)))
+            if len(raw_matches) > merge_cap:
+                raw_matches = sorted(
+                    raw_matches,
+                    key=lambda x: (x.get("score") is not None, x.get("score") or 0.0),
+                    reverse=True,
+                )[:merge_cap]
 
         # 依 score 做基本過濾，避免非常不相關的片段
         min_score_env = os.getenv("RAG_MIN_SCORE")
@@ -258,6 +409,7 @@ def _build_graph():
                 "answer": state.get("answer", ""),
                 "history": history,
                 "strict": strict,
+                "packaged_context": "",
             }
 
         rerank_top_n = min(max(top_k, 1), int(os.getenv("RAG_RERANK_TOP_N", "5")))
@@ -294,17 +446,62 @@ def _build_graph():
             "answer": state.get("answer", ""),
             "history": history,
             "strict": strict,
+            "packaged_context": "",
         }
 
-    def generate(state: RAGState) -> RAGState:
+    def package(state: RAGState) -> RAGState:
+        """調查員：用法務檢索專家 Prompt 將檢索內容打包成「原始條文脈絡」+「知識庫參考依據」，供判官使用。"""
         question = state["question"]
         context = state.get("context") or ""
         history = state.get("history", [])
         strict = bool(state.get("strict", False))
-
-        # 將對話歷史整理成簡單文字，方便模型理解上下文
+        if not context.strip() or context.strip() == "(無檢索內容)":
+            return {**state, "packaged_context": context or ""}
         history_blocks: list[str] = []
-        for turn in history:
+        for turn in history[-MAX_HISTORY_TURNS:]:
+            role = turn.get("role", "user")
+            content = (turn.get("content") or "").strip()
+            if not content:
+                continue
+            label = "使用者" if role == "user" else "助理"
+            history_blocks.append(f"{label}：{content}")
+        history_text = "\n".join(history_blocks)
+        if history_text:
+            prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n## 檢索內容\n{context}"
+        else:
+            prompt = f"## 問題\n{question}\n\n## 檢索內容\n{context}"
+        try:
+            out = chat_client.models.generate_content(
+                model=llm_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(system_instruction=_INVESTIGATOR_SYSTEM),
+            )
+            packaged_context = (out.text or "").strip() or context
+        except Exception as e:
+            logger.warning("Investigator package failed, pass through context: %s", e)
+            packaged_context = context
+        return {
+            "question": question,
+            "top_k": state.get("top_k", int(os.getenv("TOP_K", "5"))),
+            "context": context,
+            "sources": state.get("sources", []),
+            "chunks": state.get("chunks", []),
+            "answer": state.get("answer", ""),
+            "history": history,
+            "strict": strict,
+            "packaged_context": packaged_context,
+        }
+
+    def generate(state: RAGState) -> RAGState:
+        """判官：僅依調查員提供的 packaged_context 做風險判定。"""
+        question = state["question"]
+        context = state.get("context") or ""
+        packaged_context = state.get("packaged_context") or context
+        history = state.get("history", [])
+        strict = bool(state.get("strict", False))
+
+        history_blocks: list[str] = []
+        for turn in history[-MAX_HISTORY_TURNS:]:
             role = turn.get("role", "user")
             content = (turn.get("content") or "").strip()
             if not content:
@@ -313,29 +510,11 @@ def _build_graph():
             history_blocks.append(f"{label}：{content}")
         history_text = "\n".join(history_blocks)
 
-        if strict:
-            system = (
-                "你是一個嚴謹的助理，只能根據提供的「檢索內容」與對話歷史回答問題。\n"
-                "規則：\n"
-                "1) 若檢索內容與歷史不足以回答，請明確說不知道，不要亂猜，也不要補充外部世界知識。\n"
-                "2) 優先引用檢索內容中的原句或重述其要點。\n"
-                "3) 在回答內可以用 [1]、[2] 這種編號標記關鍵句的來源，\n"
-                "   並在回答最後用條列列出每個編號對應的來源（source#chunk）。"
-            )
-        else:
-            system = (
-                "你是一個嚴謹的助理，回答時應優先根據提供的「檢索內容」與對話歷史。\n"
-                "規則：\n"
-                "1) 若檢索內容不足以完全回答，可以適度補充一般常識，但要清楚標示哪些部分是推論。\n"
-                "2) 優先引用檢索內容中的原句或重述其要點。\n"
-                "3) 在回答內可以用 [1]、[2] 這種編號標記關鍵句的來源，\n"
-                "   並在回答最後用條列列出每個編號對應的來源（source#chunk）。"
-            )
-
+        system = _JUDGE_SYSTEM_STRICT if strict else _JUDGE_SYSTEM_ADVISOR
         if history_text:
-            prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n## 檢索內容\n{context}"
+            prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n## 檢索專家提供的脈絡（原始條文脈絡與知識庫參考依據）\n{packaged_context}"
         else:
-            prompt = f"## 問題\n{question}\n\n## 檢索內容\n{context}"
+            prompt = f"## 問題\n{question}\n\n## 檢索專家提供的脈絡（原始條文脈絡與知識庫參考依據）\n{packaged_context}"
 
         out = chat_client.models.generate_content(
             model=llm_model,
@@ -353,14 +532,16 @@ def _build_graph():
             "answer": answer,
             "history": history,
             "strict": strict,
+            "packaged_context": packaged_context,
         }
 
     builder = StateGraph(RAGState)
     builder.add_node("retrieve", retrieve)
+    builder.add_node("package", package)
     builder.add_node("generate", generate)
-
     builder.set_entry_point("retrieve")
-    builder.add_edge("retrieve", "generate")
+    builder.add_edge("retrieve", "package")
+    builder.add_edge("package", "generate")
     builder.add_edge("generate", END)
 
     _GRAPH = builder.compile()
@@ -388,9 +569,9 @@ def run_rag(
         "answer": "",
         "history": list(history or []),
         "strict": strict,
+        "packaged_context": "",
     }
     result_raw = graph.invoke(state)
-    # LangGraph 回傳一般 dict，這裡做輕微正規化，確保型別完整
     result: RAGState = {
         "question": result_raw.get("question", question),
         "top_k": result_raw.get("top_k", state["top_k"]),
@@ -398,9 +579,9 @@ def run_rag(
         "sources": result_raw.get("sources", []),
         "chunks": result_raw.get("chunks", []),
         "answer": result_raw.get("answer", ""),
-         # 歷史與 strict 主要由呼叫端管理，這裡還是回傳以利除錯/觀察
         "history": result_raw.get("history", state["history"]),
         "strict": bool(result_raw.get("strict", state["strict"])),
+        "packaged_context": result_raw.get("packaged_context", ""),
     }
     return result
 

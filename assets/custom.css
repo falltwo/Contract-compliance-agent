@@ -1,0 +1,115 @@
+/* ==========================================================================
+   Agent-DEMO 自訂樣式
+   聊天氣泡、側欄層級、版面與動效，符合現代設計語彙
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   主內容區：最大寬度與留白，提升可讀性
+   -------------------------------------------------------------------------- */
+.block-container {
+    max-width: 900px;
+    padding-top: 1.5rem;
+    padding-bottom: 4rem;
+}
+
+/* 標題區下方留白 */
+h1 {
+    letter-spacing: -0.02em;
+    font-weight: 700;
+    margin-bottom: 0.25rem !important;
+}
+
+/* --------------------------------------------------------------------------
+   聊天訊息卡片：圓角、邊框、微陰影
+   -------------------------------------------------------------------------- */
+[data-testid="stChatMessage"] {
+    padding: 1rem 1.25rem;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    background: rgba(30, 41, 59, 0.6);
+    margin-bottom: 0.75rem;
+    backdrop-filter: blur(8px);
+}
+[data-testid="stChatMessage"] p {
+    margin-bottom: 0.5em;
+}
+
+/* 使用者訊息靠右視覺區隔 */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    margin-left: 2rem;
+    border-color: rgba(20, 184, 166, 0.25);
+    background: rgba(20, 184, 166, 0.06);
+}
+
+/* --------------------------------------------------------------------------
+   側欄：區塊標題與分隔
+   -------------------------------------------------------------------------- */
+[data-testid="stSidebar"] .stMarkdown {
+    margin-bottom: 0.25rem;
+}
+[data-testid="stSidebar"] h2 {
+    font-size: 0.95rem !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94A3B8;
+    margin-top: 1.25rem;
+    margin-bottom: 0.5rem;
+}
+[data-testid="stSidebar"] hr {
+    margin: 1rem 0;
+    border-color: rgba(148, 163, 184, 0.15);
+}
+
+/* 按鈕：主色與圓角 */
+[data-testid="stSidebar"] button {
+    border-radius: 10px;
+    font-weight: 500;
+}
+
+/* --------------------------------------------------------------------------
+   展開器：較柔和邊框
+   -------------------------------------------------------------------------- */
+[data-testid="stExpander"] {
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    overflow: hidden;
+}
+[data-testid="stExpander"] summary {
+    font-weight: 500;
+}
+
+/* 輸入框與滑桿在側欄的視覺 */
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stCheckbox label {
+    font-size: 0.9rem;
+}
+
+/* 頁尾留白，避免輸入框擋住最後一則訊息 */
+.stChatInput {
+    padding-bottom: 1rem;
+}
+
+/* --------------------------------------------------------------------------
+   標題下方副標：編輯感
+   -------------------------------------------------------------------------- */
+.app-tagline {
+    font-size: 0.95rem;
+    color: #94A3B8;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+}
+
+/* --------------------------------------------------------------------------
+   Eval 頁：指標卡片
+   -------------------------------------------------------------------------- */
+[data-testid="stMetric"] {
+    background: rgba(30, 41, 59, 0.5);
+    padding: 1rem;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.1);
+}
+[data-testid="stMetric"] label {
+    color: #94A3B8 !important;
+    font-size: 0.8rem !important;
+}
