@@ -76,6 +76,6 @@ def get_chat_client_and_model() -> Tuple[Any, str]:
     google_api_key = os.getenv("GOOGLE_API_KEY")
     if not google_api_key:
         raise RuntimeError("缺少環境變數 GOOGLE_API_KEY（請放在 .env）")
-    model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    model = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.1-flash-lite-preview")
     client = genai.Client(api_key=google_api_key)
     return client, model

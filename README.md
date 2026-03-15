@@ -45,6 +45,7 @@
 - [使用方式](#四使用方式)
 - [進階與備註](#五進階與備註)
 - [開發與測試](#六開發與測試)
+- [建議可增加的擴充](#七建議可增加的擴充)
 - [更新記錄（Recent Updates）](#更新記錄recent-updates)
 
 ---
@@ -65,7 +66,7 @@
 
 | 類別 | 選型 | 說明 |
 |------|------|------|
-| **LLM / Embedding** | Google **Gemini** | 對話預設 `gemini-2.5-flash`，向量化 `gemini-embedding-001`；Eval 可選 **Groq**（`llama-3.3-70b-versatile`）避開免費額度限制。 |
+| **LLM / Embedding** | Google **Gemini** | 對話預設 `gemini-3.1-flash-lite-preview`（Gemini 3.1 Flash Lite），向量化 `gemini-embedding-001`；Eval 可選 **Groq**（`llama-3.3-70b-versatile`）避開免費額度限制。 |
 | **向量庫** | **Pinecone** | 存文件切片向量與 metadata，支援高維檢索。 |
 | **RAG 流程** | **LangGraph** | StateGraph：檢索 → 過濾／去重／MMR 或 LLM rerank → 生成。 |
 | **前端** | **Streamlit** | 聊天介面、多對話、上傳灌入、圖表、**Eval 運行記錄**與**Eval 批次結果**檢視。 |
@@ -101,7 +102,9 @@
 | **合約／法律** | `contract_risk_agent`、`contract_risk_with_law_search`、`tw_law_web_search` |
 | **圖表** | `create_chart`、`analyze_and_chart` |
 | **公司工具** | `financial_metrics`、`parse_dates_from_text`、`generate_quarterly_plan` |
-| **專家** | `financial_report_agent`、`esg_agent`、`data_analyst_agent` |
+<<<<<<< HEAD
+| **專家** | `financial_report_agent`、`esg_agent`、`data_analyst_agent`、`contract_risk_agent` |
+| **合約＋法條** | `contract_risk_with_law_search`（RAG → 抽法條 → Tavily 司法院／網路 → Firecrawl 對比 → 自檢 → 免責聲明） |
 | **對話** | `small_talk`、`ask_web_vs_rag` |
 
 - **contract_risk_agent**：合約／採購條款風險分析，依知識庫檢索產出條款類型、風險等級與建議。
@@ -128,6 +131,11 @@
             │
             ├─ Firecrawl 意圖層：規則或可選 LLM 判斷「擷取單頁 / 搜尋並擷取」
             │       → 命中則執行 scrape_url 或 firecrawl_search
+            │
+            ├─ 台灣法律／司法院意圖（tw_law_intent）→ tw_law_web_search
+            │
+            ├─ 合約審閱＋法條查詢（contract_risk_with_law_intent）：問題含「審閱合約」「合約風險」或「合約／契約／租賃＋分析／檢查／評估」等
+            │       → contract_risk_with_law_search（RAG → 抽法條 → Tavily 查司法院／網路 → Firecrawl 法條對比 → LLM 風險評估 → AI 自檢 → 免責聲明）
             │
             └─ 否則 → LLM 工具路由（_decide_tool）
                     → 依選出之 tool 執行（rag_search / research / web_search / 圖表 / 公司工具 / 專家等）
@@ -162,8 +170,10 @@ StateGraph(RAGState)
 - **網路與網頁**：Tavily 一般搜尋、Firecrawl 單頁擷取與關鍵字搜尋擷取；意圖可由規則或可選 LLM 判斷。
 - **圖表**：依使用者描述或資料畫 ECharts；analyze_and_chart 從知識庫檢索後分析並可確認後產圖，可選 ECharts MCP 產 PNG。
 - **公司工具**：財報指標計算、從文字解析日期、產生季度計畫表。
+<<<<<<< HEAD
 - **專家**：財報／營運、ESG／法遵、資料分析（報表摘要／數據趨勢）、合約法遵審閱（條款、風險、民法／消保法）專用回答。
-- **前端**：多對話、嚴格／非嚴格模式、上傳並灌入文件、檢索片段與圖表展示；側欄可切換「對話」「Eval 運行記錄」「Eval 批次結果」。
+- **合約審閱＋法條查詢**：問題為審閱合約、合約風險或分析／檢查契約時，走 **contract_risk_with_law_search**：RAG 取合約 → 抽法條字號 → **Tavily** 查司法院／網路條文與實務 → **Firecrawl** 擷取法條對比（選用）→ LLM 產出風險摘要、法條重點、建議、法條字號清單與來源列表 → **AI 自檢**（一致性與具體建議）→ 文末強制附加**免責聲明**。需 `TAVILY_API_KEY`（與選用 `FIRECRAWL_API_KEY`）。
+- **前端**：多對話、嚴格／非嚴格模式、上傳並灌入文件、檢索片段與圖表展示、**清空資料庫**按鈕；側欄可切換「對話」「Eval 運行記錄」「Eval 批次結果」。
 
 ---
 
@@ -195,8 +205,8 @@ uv run streamlit run streamlit_app.py
 
 | 變數 | 說明 |
 |------|------|
-| `TAVILY_API_KEY` | 網路搜尋（Tavily） |
-| `FIRECRAWL_API_KEY` | 網頁擷取／搜尋 |
+| `TAVILY_API_KEY` | 網路搜尋（Tavily）；**合約審閱＋法條查詢**時用於查司法院／網路條文與實務。 |
+| `FIRECRAWL_API_KEY` | 網頁擷取／搜尋；**合約審閱＋法條查詢**時用於法條對比擷取（選用）。 |
 | `USE_ECHARTS_MCP=1` | 圖表 PNG 輸出（需本機 Node.js 18+） |
 | `EVAL_LOG_ENABLED=1` | 寫入 Eval 運行記錄，路徑 `EVAL_LOG_PATH`（預設 `eval_runs.jsonl`） |
 | `GROQ_API_KEY` | Eval 時以 `--groq` 使用 Groq；**勿在 .env 寫 `EVAL_USE_GROQ=1`**（否則 Streamlit 也會用 Groq） |
@@ -255,6 +265,52 @@ uv run python eval/run_eval.py --groq
 
 - **依賴與執行**：**uv**（`pyproject.toml`，Python ≥3.13）。
 - **測試**：`uv run pytest`（需安裝 dev 依賴：`uv sync --extra dev`）；測試位於 `tests/`。
+
+---
+
+## 七、建議可增加的擴充
+
+以下為針對本專案可再強化的方向，依**體驗與功能**、**穩定性與維運**、**安全與合規**、**法遵／合約**四類整理，可依優先序擇項實作。
+
+### 7.1 體驗與功能
+
+| 項目 | 說明 |
+|------|------|
+| **對話匯出** | 支援將單一對話或全部對話匯出為 Markdown／PDF，方便存檔或分享（含問題、回答、來源列表與時間戳）。 |
+| **檢索片段可複製** | 在「查看檢索片段」區塊為每個 chunk 提供一鍵複製或「引用此段」按鈕，方便撰寫報告時引用。 |
+| **合約審閱結果匯出** | 合約審閱＋法條查詢完成後，提供「下載報告」按鈕（MD／PDF），內含風險摘要、法條清單、來源、自檢與免責聲明。 |
+| **對話標題可編輯** | 側欄對話列表支援手動重新命名標題，而非僅用首句問題前 20 字。 |
+| **快捷提示（prompt 範本）** | 側欄或輸入框旁提供常用問法（如「審閱這份合約並查法條」「列出知識庫來源」），一鍵填入。 |
+| **Streaming 回答** | 若 LLM 支援，改為串流輸出回答文字，減少長時間等待感。 |
+
+### 7.2 穩定性與維運
+
+| 項目 | 說明 |
+|------|------|
+| **健康檢查** | 提供簡易 health endpoint 或 CLI（如 `uv run python -c "from rag_common import get_clients_and_index; get_clients_and_index()"`），確認 Pinecone、Gemini、.env 是否正常。 |
+| **環境檢查頁** | 在 Streamlit 側欄或獨立頁顯示：各 API key 是否已設定（不顯示實際 key）、Pinecone index 維度、目前 Chat／Embed 模型，方便除錯。 |
+| **請求逾時與重試** | 對 Tavily、Firecrawl、Gemini 等外部 API 設定合理 timeout；Streamlit 對話路徑可考慮對 429／暫時錯誤做重試或友善提示（Eval 與 embed 已有部分重試）。 |
+| **清空資料庫確認** | 「清空資料庫」按鈕改為二次確認（例如輸入「確認清空」或勾選），避免誤觸。 |
+| **日誌與追蹤** | 重要操作（灌入、清空、合約審閱流程）寫入結構化 log（含 tool、chat_id、耗時）；可選整合 LangSmith／OpenTelemetry 做 trace。 |
+
+### 7.3 安全與合規
+
+| 項目 | 說明 |
+|------|------|
+| **輸入長度與格式** | 對使用者問題與上傳檔名做長度與字元檢查，避免過長或異常字元導致錯誤或濫用。 |
+| **上傳檔案類型與大小** | 除副檔名外，可依 magic bytes 檢查真實檔案類型；單檔與單次上傳總大小限制可設為可配置（如 .env）。 |
+| **敏感資訊** | 若對話或灌入內容可能含個資／機密，可加註說明或提供「不記錄此對話」選項、本機-only 模式等（依需求取捨）。 |
+
+### 7.4 法遵／合約相關
+
+| 項目 | 說明 |
+|------|------|
+| **法條正則擴充** | 目前 `_LAW_REF_PATTERN` 已含民法、消保法、租賃住宅市場發展及管理條例等；可再擴充「第 N 條之 M」「第 N 條第 M 項」等 pattern，或支援更多法規名稱。 |
+| **全國法規資料庫 API** | 若有穩定 API，可整合「法條字號 → 條文內容」直接查詢，減少依賴 Tavily 搜尋結果不穩定性。 |
+| **合約審閱 Eval 題集** | 在 `eval/eval_set.json` 或另建題集，加入合約審閱／法條查詢範例題與預期 tool（`contract_risk_with_law_search`），方便回歸測試與比對。 |
+| **多語言免責聲明** | 若需服務英文或其他語系使用者，可將免責聲明改為依介面語系或參數選擇不同語句。 |
+
+以上項目可依團隊資源與優先序挑選實作，並在「更新記錄」或本節補充實際完成項目。
 
 ---
 

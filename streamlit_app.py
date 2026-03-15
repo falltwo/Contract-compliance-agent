@@ -8,19 +8,21 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+from dotenv import load_dotenv
 from google import genai
 from streamlit_echarts import st_echarts
 from pypdf import PdfReader
 
 from agent_router import route_and_answer
 from eval_log import is_enabled as eval_log_enabled, load_runs, log_run as eval_log_run
+from llm_client import get_chat_client_and_model
 from rag_common import (
     chunk_text,
     embed_texts,
     get_clients_and_index,
     stable_id,
 )
-from sources_registry import update_registry_on_ingest
+from sources_registry import load_registry, save_registry, update_registry_on_ingest
 
 
 def _inject_custom_css() -> None:
@@ -319,7 +321,7 @@ def ingest_uploaded_files(
         return 0
 
     vectors = embed_texts(
-        gemini,
+        embed_client,
         all_texts,
         model=embed_model,
         output_dimensionality=index_dim,
@@ -359,7 +361,10 @@ def main() -> None:
     _inject_custom_css()
 
     try:
-        chat_client, embed_client, index, index_dim, llm_model, embed_model, index_name = _cached_get_clients_and_index()
+        chat_client, embed_client, index, index_dim, _cached_llm, embed_model, index_name = _cached_get_clients_and_index()
+        # 強制載入專案根目錄 .env，確保側欄與請求使用正確的 GEMINI_CHAT_MODEL
+        load_dotenv(Path(__file__).resolve().parent / ".env")
+        _, llm_model = get_chat_client_and_model()
     except Exception as e:
         st.error(f"初始化失敗：{e}")
         st.stop()
@@ -424,6 +429,16 @@ def main() -> None:
             else:
                 # 若只剩一個，則重置成新的空對話
                 conversations[active_conv_id] = {"title": "新對話", "messages": []}
+            st.rerun()
+
+        st.divider()
+        if st.button("清空資料庫", type="secondary", use_container_width=True, key="btn_clear_db"):
+            try:
+                index.delete(delete_all=True)
+                save_registry([])
+                st.success("已清空向量庫與來源註冊表。")
+            except Exception as e:
+                st.error(f"清空失敗：{e}")
             st.rerun()
 
     # 主標題；Eval 頁改為情境化小標，對話頁保留完整副標

@@ -27,7 +27,7 @@
   「知識庫問答 + 多工具 Agent 路由」示範系統，可上傳文件灌入向量庫，支援 RAG 問答、網路搜尋、網頁擷取、圖表生成與 Eval。
 
 - **技術棧**（摘自 README）
-  - LLM / Embedding：Google Gemini（對話 `gemini-2.5-flash`，向量 `gemini-embedding-001`），Eval 可選 Groq
+  - LLM / Embedding：Google Gemini（對話 `gemini-3.1-flash-lite-preview`，向量 `gemini-embedding-001`），Eval 可選 Groq
   - 向量庫：Pinecone
   - RAG 流程：LangGraph StateGraph（retrieve → generate）
   - 前端：Streamlit（多對話、上傳灌入、檢索片段與圖表、Eval 運行記錄與批次結果）

@@ -15,7 +15,7 @@ description: Use when the user asks about RAG, retrieval-augmented generation, A
 
 ## Project Architecture (Brief)
 
-- **LLM / Embedding**: Google Gemini (`gemini-2.5-flash`, `gemini-embedding-001`)
+- **LLM / Embedding**: Google Gemini (`gemini-3.1-flash-lite-preview`, `gemini-embedding-001`)
 - **Vector DB**: Pinecone (index name from `PINECONE_INDEX`, default `agent-index`)
 - **RAG flow**: LangGraph `StateGraph(RAGState)` in `rag_graph.py` — retrieve (with optional dedup, MMR, rerank) → generate
 - **Agent**: `agent_router.py` — decides tool (rag_search, research, web_search, scrape_url, firecrawl_search, create_chart, expert_agents, etc.) via LLM; then executes and returns answer + sources

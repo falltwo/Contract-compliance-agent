@@ -139,14 +139,19 @@ def tw_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
 
 
 def contract_risk_with_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """使用者要「審閱合約」或「合約風險」時，優先走「合約＋法條查詢」整合流程，確保會查司法院並把外部連結列入來源。"""
+    """使用者要「審閱合約」或任何合約／契約分析時，優先走「合約＋法條查詢」整合流程，確保會查司法院／Tavily 並把外部連結列入來源。"""
     if not question or not question.strip():
         return None
     q = question.strip()
-    # 審閱合約、合約風險、合約＋法條／法律 等一律走完整流程（合約 RAG ＋ 抽法條 ＋ 查司法院）
-    if "審閱" in q and "合約" in q:
+    # 審閱合約、合約風險、合約＋法條／法律 等一律走完整流程（合約 RAG ＋ 抽法條 ＋ Tavily 查司法院）
+    if "審閱" in q and ("合約" in q or "契約" in q):
         return ("contract_risk_with_law_search", {})
     if "合約" in q and ("風險" in q or "法條" in q or "法律" in q or "條文" in q or "民法" in q or "消保法" in q or "司法院" in q or "條例" in q):
+        return ("contract_risk_with_law_search", {})
+    # 合約／契約／租賃 ＋ 分析／檢查／評估／看看 等也走完整流程，確保觸發 Tavily 查司法院與網路條文
+    if any(term in q for term in ("合約", "契約", "契約書", "租賃契約")) and any(
+        k in q for k in ("分析", "檢查", "評估", "看看", "幫我看", "審閱", "風險", "法條", "法律")
+    ):
         return ("contract_risk_with_law_search", {})
     return None
 
@@ -203,9 +208,12 @@ def _format_firecrawl_scrape_result(raw: Any, max_chars: int = 30000) -> str:
     return str(raw)[:max_chars] + ("…" if len(str(raw)) > max_chars else "")
 
 
-# ---------- 合約審閱＋法條查詢流程：從合約抽出法條字號 → 查司法院 → 整合評估 ----------
+# ---------- 合約審閱＋法條查詢流程：從合約抽出法條字號 → 查司法院／爬蟲對比 → 整合評估 ----------
+_CONTRACT_DISCLAIMER = (
+    "本分析僅供內部風險初步檢視與參考，不能視為正式法律意見，重要合約仍應由執業律師審閱。"
+)
 _LAW_REF_PATTERN = re.compile(
-    r"(民法|消費者保護法|消保法|政府採購法|行政程序法|民事訴訟法|刑事訴訟法|消防法|自來水法)"
+    r"(民法|消費者保護法|消保法|政府採購法|行政程序法|民事訴訟法|刑事訴訟法|消防法|自來水法|租賃住宅市場發展及管理條例)"
     r"\s*第\s*(\d+)\s*條(?:\s*第\s*\d+\s*項)?"
 )
 
@@ -234,6 +242,35 @@ def _web_search_with_urls(query: str, max_results: int = 5) -> Tuple[str, List[s
     text = _web_search(query=query, max_results=max_results)
     urls = re.findall(r"\]\((https?://[^\)]+)\)", text)
     return text, list(dict.fromkeys(urls))  # 保持順序去重
+
+
+def _crawl_law_for_comparison(law_refs: List[str], *, max_refs: int = 5) -> Tuple[str, List[str]]:
+    """使用 Firecrawl 搜尋並擷取法條相關頁面，供與合約引用對比、增加可信度。回傳 (markdown 摘要, URL 列表)。"""
+    urls: List[str] = []
+    parts: List[str] = []
+    for ref in law_refs[:max_refs]:
+        query = f"{ref} 全國法規資料庫 OR 司法院"
+        raw = search_and_scrape(query, limit=2)
+        if isinstance(raw, str) and ("未設定" in raw or "失敗" in raw):
+            continue
+        if isinstance(raw, dict):
+            data = raw.get("data") if isinstance(raw.get("data"), list) else raw.get("results")
+            if data:
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    meta = item.get("metadata") or {}
+                    title = item.get("title") or meta.get("title") or ref
+                    url_h = item.get("url") or meta.get("source") or ""
+                    md = item.get("markdown") or item.get("content") or ""
+                    if url_h:
+                        urls.append(url_h)
+                    excerpt = (md[:2500] + "…") if len(str(md)) > 2500 else (md or "")
+                    if excerpt:
+                        parts.append(f"### {ref}\n**來源：** {title}\n{url_h}\n\n{excerpt}")
+    if not parts:
+        return "", urls
+    return "\n\n".join(parts), list(dict.fromkeys(urls))
 
 
 def _contract_risk_with_law_search_impl(
@@ -272,26 +309,33 @@ def _contract_risk_with_law_search_impl(
             if len(law_sections) >= 2:
                 break
 
+    # 使用爬蟲（Firecrawl）擷取法條頁面，與合約引用對比以增加可信度
+    crawl_law_text, crawl_urls = _crawl_law_for_comparison(law_refs)
+    if crawl_urls:
+        web_urls.extend(crawl_urls)
+
     combined_context = "## 合約檢索內容（知識庫）\n\n" + context_rag
     if law_sections:
         combined_context += "\n\n## 查詢到的相關條文與實務見解（司法院／網路）\n\n" + "\n\n".join(law_sections)
     else:
         combined_context += "\n\n## 查詢到的相關條文\n（未設定 TAVILY_API_KEY 或未找到對應條文，僅依合約內容評估。）"
+    if crawl_law_text:
+        combined_context += "\n\n## 爬蟲擷取之法條對比（供可信度對照）\n\n以下為以法條字號搜尋並擷取之條文內容，請與合約引用對照說明是否一致。\n\n" + crawl_law_text
     if web_urls:
         combined_context += "\n\n## 本次查詢使用之外部連結（請在回答的「來源列表」中一併列出）\n" + "\n".join(f"- {u}" for u in web_urls)
 
     system = (
-        "你是合約與法遵輔助審閱專家。請**嚴格根據**以下兩部分內容做風險評估：\n"
+        "你是合約與法遵輔助審閱專家。請**嚴格根據**以下內容做風險評估：\n"
         "1) **合約檢索內容**：來自使用者上傳的合約／文件。\n"
-        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋。\n\n"
+        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋。\n"
+        "3) 若有 **爬蟲擷取之法條對比**：請在「相關法條重點」或獨立小節簡要說明合約引用之法條與擷取條文是否一致，以增加可信度。\n\n"
         "請依序產出：\n"
         "**一、合約條款風險摘要**：條列本合約中對買方／我方可能不利的條款，並註明對應的合約來源（如 [chunkX]）。\n"
-        "**二、相關法條重點**：對照上面「查詢到的相關條文」節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋。\n"
+        "**二、相關法條重點**：對照上面「查詢到的相關條文」與「爬蟲擷取之法條對比」（若有）節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋；若有法條對比，請說明與合約引用是否一致。\n"
         "**三、風險提醒與建議**：綜合合約與法條，說明應注意的風險與可考慮的調整方向（勿自行推算具體金額）。\n"
         "**四、本合約提及之法律字號清單**：列出檢索內容中出現的所有法律名稱與條號。\n\n"
         "**五、來源列表**：必須分兩部分寫清楚：(1) 合約來源（列出上述用到的 PDF chunk，如 uploaded/.../xxx.pdf#chunk0）；(2) 外部連結（逐條列出「本次查詢使用之外部連結」區塊中的 URL，不可省略）。\n\n"
-        "最後加一句：\n"
-        "「本分析僅供內部風險初步檢視與參考，不能視為正式法律意見，重要合約仍應由執業律師審閱。」"
+        "回答中不需重複寫免責聲明，系統會自動於文末附加。"
     )
     history_text = ""
     if history:
@@ -329,6 +373,7 @@ def _contract_risk_with_law_search_impl(
             "**1. 與合約檢索內容一致性**：回答中的條款描述、chunk 引用是否與合約摘要相符？若有未對應到來源的敘述請註明。\n"
             "**2. 與法條／實務見解一致性**：回答中引用的法條或實務見解是否與下方法條摘要一致？有無過度推論或與法條明顯矛盾之處？\n"
             "**3. 建議人工再確認之處**：列出建議法務或使用者再核對的項目（例如：具體金額、條號、責任歸屬）。\n"
+            "**4. 具體建議**：給出 1～3 條可執行的後續建議（例如：建議委請律師審閱某條、建議與對方確認某事項、建議補充查詢某法規）。\n"
             "若整體一致、無明顯矛盾，也請簡要說明。禁止輸出與自檢無關的內容。"
         )
         verify_prompt = (
@@ -348,6 +393,10 @@ def _contract_risk_with_law_search_impl(
     except Exception as e:
         logger.warning("contract_risk_with_law_search: AI 自檢步驟失敗，略過: %s", e, exc_info=True)
         answer += "\n\n---\n\n**【AI 自檢】**\n（本次自檢未執行或執行失敗，建議人工核對上述內容與來源。）"
+
+    # 文末一律附加免責聲明，確保可見且不被遺漏
+    if _CONTRACT_DISCLAIMER not in answer:
+        answer += "\n\n---\n\n**【免責聲明】**\n\n" + _CONTRACT_DISCLAIMER
 
     sources = list(sources_rag) + web_urls
     return answer, sources, chunks_rag

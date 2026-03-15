@@ -39,7 +39,7 @@ def main() -> None:
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
     index_name = os.getenv("PINECONE_INDEX", "agent-index")
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    llm_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+    llm_model = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.1-flash-lite-preview")
     embed_model = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
     output_dimensionality = os.getenv("EMBED_DIM")
     dim = int(output_dimensionality) if output_dimensionality else None
