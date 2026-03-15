@@ -332,6 +332,12 @@ uv run python eval/run_eval.py --groq
 | **專家** | **contract_risk_agent**、**data_analyst_agent**、財報／ESG 專家；合約專家具 15 年法務審查 prompt 與 strict／顧問雙模式。 |
 | **前端與設定** | `streamlit_app.py` 多對話、Eval 檢視；`assets/custom.css`；`.env.example` 含 RAG 記憶、多查詢、Gavel 等；競賽筆記 `competition_notes_contract_ai.md`。 |
 
+### 分支同步記錄
+
+| 日期 | 分支 | 說明 |
+|------|------|------|
+| **2026-03-15** | **Falltwo_1** | 拉取並合併最新 `origin/main`（fast-forward 至 `e90bd7e`）。主要變更：`agent_router.py`、`rag_graph.py`、`streamlit_app.py`、`expert_agents.py` 與相關設定（`.streamlit/config.toml`、`.env.example`）；文件更新（README、競賽筆記、合約審閱流程）；Eval 與 `sources_registry` 等。 |
+
 ---
 
 ## 結語
