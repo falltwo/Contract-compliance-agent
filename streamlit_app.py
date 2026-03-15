@@ -22,7 +22,7 @@ from rag_common import (
     get_clients_and_index,
     stable_id,
 )
-from sources_registry import load_registry, save_registry, update_registry_on_ingest
+from sources_registry import load_registry, save_registry, list_sources, update_registry_on_ingest
 
 
 def _inject_custom_css() -> None:
@@ -82,6 +82,7 @@ def answer_with_rag(
     history: list[dict[str, Any]] | None = None,
     strict: bool = True,
     chat_id: str | None = None,
+    rag_scope_chat_id: str | None = None,
     original_question: str | None = None,
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
@@ -94,6 +95,7 @@ def answer_with_rag(
         history=history or [],
         strict=strict,
         chat_id=chat_id,
+        rag_scope_chat_id=rag_scope_chat_id,
         original_question=original_question,
         clarification_reply=clarification_reply,
         chart_confirmation_question=chart_confirmation_question,
@@ -109,6 +111,7 @@ def _answer_with_rag_and_log(
     history: list[dict[str, Any]] | None = None,
     strict: bool = True,
     chat_id: str | None = None,
+    rag_scope_chat_id: str | None = None,
     original_question: str | None = None,
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
@@ -122,6 +125,7 @@ def _answer_with_rag_and_log(
         history=history or [],
         strict=strict,
         chat_id=chat_id,
+        rag_scope_chat_id=rag_scope_chat_id,
         original_question=original_question,
         clarification_reply=clarification_reply,
         chart_confirmation_question=chart_confirmation_question,
@@ -264,7 +268,7 @@ def _render_eval_batch_view() -> None:
                     answer_text += f" 字數：{r.get('answer_len')}"
             st.text_area("", value=answer_text, height=180, disabled=True, key=f"batch_ans_{selected}_{idx}")
             if r.get("error"):
-                st.caption(f"錯誤：{r.get('error')[:500]}")
+                st.caption(f"錯誤：{str(r.get('error'))[:500]}")
 
 
 def ingest_uploaded_files(
@@ -353,8 +357,8 @@ def ingest_uploaded_files(
 
 def main() -> None:
     st.set_page_config(
-        page_title="Agent-DEMO",
-        page_icon="🔎",
+        page_title="智慧問答合約／採購法遵審閱助理",
+        page_icon="💬",
         layout="centered",
         initial_sidebar_state="expanded",
     )
@@ -389,6 +393,14 @@ def main() -> None:
         st.caption(f"Embed model：`{embed_model}`")
         top_k = st.slider("TOP_K", min_value=1, max_value=20, value=int(os.getenv("TOP_K", "5")), step=1)
         strict_mode = st.checkbox("嚴格只根據知識庫回答", value=False, help="勾選時一律只依知識庫回答、不經合約／法條工具。合約審閱建議不勾選以啟用合約專家與法條查詢。")
+        # 若此對話有上傳過檔案，預設勾選「只搜尋此對話上傳的檔案」，避免參考連結／檢索片段參雜其他來源
+        has_uploads_here = len(list_sources(chat_id=active_conv_id)) > 0
+        filter_by_chat = st.checkbox(
+            "只搜尋此對話上傳的檔案",
+            value=has_uploads_here,
+            help="勾選時，參考連結與檢索片段僅來自本對話上傳的檔案；不勾選則搜尋整個知識庫。",
+        )
+        rag_scope_chat_id = active_conv_id if filter_by_chat else None
         with st.expander("合約審閱提示", expanded=True):
             st.caption("上傳合約後可問：「請審閱這份合約的風險條款」「合約風險評估並查相關法條」，或使用下方一鍵審閱。")
             if st.button("一鍵審閱（僅知識庫）", use_container_width=True, key="one_click_knowledge"):
@@ -560,6 +572,7 @@ def main() -> None:
                     history=history_for_model,
                     strict=strict_mode,
                     chat_id=active_conv_id,
+                    rag_scope_chat_id=rag_scope_chat_id,
                     chart_confirmation_question=pending_chart,
                     chart_confirmation_reply=question,
                 )
@@ -606,6 +619,7 @@ def main() -> None:
                     history=history_for_model,
                     strict=strict_mode,
                     chat_id=active_conv_id,
+                    rag_scope_chat_id=rag_scope_chat_id,
                     original_question=pending,
                     clarification_reply=question,
                 )
@@ -649,6 +663,7 @@ def main() -> None:
                 history=history_for_model,
                 strict=strict_mode,
                 chat_id=active_conv_id,
+                rag_scope_chat_id=rag_scope_chat_id,
             )
         main_content, refs_content = _split_answer_and_refs(answer or "")
         st.markdown(main_content or "(空回覆)")

@@ -1,44 +1,45 @@
 /* ==========================================================================
-   Agent-DEMO 自訂樣式
-   聊天氣泡、側欄層級、版面與動效，符合現代設計語彙
+   RAG 智慧問答 自訂樣式
+   主色 #1E3A8A、按鈕 #3B82F6、背景 #F8FAFC、警告 #EF4444、成功 #22C55E
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   主內容區：最大寬度與留白，提升可讀性
+   主內容區：背景與留白（背景 #F8FAFC）
    -------------------------------------------------------------------------- */
 .block-container {
     max-width: 900px;
     padding-top: 1.5rem;
     padding-bottom: 4rem;
+    background: #F8FAFC;
 }
 
-/* 標題區下方留白 */
+/* 標題：主色 #1E3A8A */
 h1 {
     letter-spacing: -0.02em;
     font-weight: 700;
     margin-bottom: 0.25rem !important;
+    color: #1E3A8A !important;
 }
 
 /* --------------------------------------------------------------------------
-   聊天訊息卡片：圓角、邊框、微陰影
+   聊天訊息卡片：圓角、邊框，無灰底以免蓋住字樣
    -------------------------------------------------------------------------- */
 [data-testid="stChatMessage"] {
     padding: 1rem 1.25rem;
     border-radius: 16px;
-    border: 1px solid rgba(148, 163, 184, 0.12);
-    background: rgba(30, 41, 59, 0.6);
+    border: 1px solid rgba(30, 58, 138, 0.2);
+    background: transparent;
     margin-bottom: 0.75rem;
-    backdrop-filter: blur(8px);
 }
 [data-testid="stChatMessage"] p {
     margin-bottom: 0.5em;
 }
 
-/* 使用者訊息靠右視覺區隔 */
+/* 使用者訊息靠右，按鈕主色 #3B82F6 邊框 */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
     margin-left: 2rem;
-    border-color: rgba(20, 184, 166, 0.25);
-    background: rgba(20, 184, 166, 0.06);
+    border-color: rgba(59, 130, 246, 0.4);
+    background: transparent;
 }
 
 /* --------------------------------------------------------------------------
@@ -52,16 +53,16 @@ h1 {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #94A3B8;
+    color: #1E3A8A !important;
     margin-top: 1.25rem;
     margin-bottom: 0.5rem;
 }
 [data-testid="stSidebar"] hr {
     margin: 1rem 0;
-    border-color: rgba(148, 163, 184, 0.15);
+    border-color: rgba(30, 58, 138, 0.15);
 }
 
-/* 按鈕：主色與圓角 */
+/* 按鈕：圓角（主色 #3B82F6 由 .streamlit/config.toml primaryColor 控制） */
 [data-testid="stSidebar"] button {
     border-radius: 10px;
     font-weight: 500;
@@ -72,11 +73,12 @@ h1 {
    -------------------------------------------------------------------------- */
 [data-testid="stExpander"] {
     border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.12);
+    border: 1px solid rgba(30, 58, 138, 0.15);
     overflow: hidden;
 }
 [data-testid="stExpander"] summary {
     font-weight: 500;
+    color: #1E3A8A;
 }
 
 /* 輸入框與滑桿在側欄的視覺 */
@@ -95,7 +97,8 @@ h1 {
    -------------------------------------------------------------------------- */
 .app-tagline {
     font-size: 0.95rem;
-    color: #94A3B8;
+    color: #1E3A8A;
+    opacity: 0.85;
     margin-bottom: 1.5rem;
     font-weight: 400;
 }
@@ -104,12 +107,23 @@ h1 {
    Eval 頁：指標卡片
    -------------------------------------------------------------------------- */
 [data-testid="stMetric"] {
-    background: rgba(30, 41, 59, 0.5);
+    background: rgba(248, 250, 252, 0.9);
     padding: 1rem;
     border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.1);
+    border: 1px solid rgba(30, 58, 138, 0.15);
 }
 [data-testid="stMetric"] label {
-    color: #94A3B8 !important;
+    color: #1E3A8A !important;
     font-size: 0.8rem !important;
+}
+
+/* 語意色：成功 #22C55E、警告 #EF4444（Streamlit 內建元件會用 config 的 greenColor/redColor） */
+.stSuccess, [data-testid="stAlert"] [data-baseweb="notification"][kind="positive"] {
+    border-left-color: #22C55E !important;
+}
+.stError, [data-testid="stAlert"] [data-baseweb="notification"][kind="negative"] {
+    border-left-color: #EF4444 !important;
+}
+.stWarning {
+    border-left-color: #EAB308 !important;
 }

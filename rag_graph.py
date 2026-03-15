@@ -365,6 +365,8 @@ def _build_graph():
             aux_top_k = int(os.getenv("RAG_AUX_QUERY_TOP_K", "8"))
             aux_max = int(os.getenv("RAG_AUX_QUERY_MAX", "3"))
             use_multi_query = os.getenv("RAG_MULTI_QUERY", "").strip().lower() in ("1", "true", "yes")
+            filter_chat_id = state.get("chat_id")
+            query_filter = {"chat_id": {"$eq": filter_chat_id}} if filter_chat_id else None
 
             qvec = _embed_query_common(
                 embed_client,
@@ -372,7 +374,7 @@ def _build_graph():
                 model=embed_model,
                 output_dimensionality=index_dim,
             )
-            res = index.query(vector=qvec, top_k=internal_top_k, include_metadata=True)
+            res = index.query(vector=qvec, top_k=internal_top_k, include_metadata=True, filter=query_filter)
             raw_matches = list(res.get("matches", []) or [])
             seen_keys = {_match_key(m) for m in raw_matches}
 
@@ -390,7 +392,7 @@ def _build_graph():
                             model=embed_model,
                             output_dimensionality=index_dim,
                         )
-                        res_aux = index.query(vector=qvec_aux, top_k=aux_top_k, include_metadata=True)
+                        res_aux = index.query(vector=qvec_aux, top_k=aux_top_k, include_metadata=True, filter=query_filter)
                         for m in res_aux.get("matches", []) or []:
                             k = _match_key(m)
                             if k not in seen_keys:
@@ -600,10 +602,10 @@ def run_rag(
 
     history：前文對話紀錄（role/user, content）
     strict：是否嚴格只依據檢索內容與歷史回答
-    chat_id：選填，用於 Checkpointing 的 thread_id（同一對話可沿用同一 id 以支援未來重放／續跑）
+    chat_id：若設定，檢索僅限此對話上傳的 chunks；亦用於 Checkpointing 的 thread_id（同一對話可沿用同一 id 以支援未來重放／續跑）。
     """
     graph = _build_graph()
-    state: RAGState = {
+    state: dict[str, Any] = {
         "question": question,
         "top_k": top_k or int(os.getenv("TOP_K", "5")),
         "context": "",
@@ -614,6 +616,8 @@ def run_rag(
         "strict": strict,
         "packaged_context": "",
     }
+    if chat_id:
+        state["chat_id"] = chat_id
     config = {"configurable": {"thread_id": chat_id or "default"}}
     result_raw = graph.invoke(state, config=config)
     result: RAGState = {
@@ -635,10 +639,12 @@ def run_rag(
 def retrieve_only(
     question: str,
     top_k: int = 5,
+    chat_id: str | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]], float | None]:
     """僅做檢索、不生成。與主 RAG 共用同一套流程：多取 internal_top_k → 過濾 → 可選 dedup → LLM rerank。
 
     供 Research Agent 判斷是否要補網搜；回傳 (context, sources, chunks, top_score)。無結果時 top_score 為 None。
+    chat_id：若設定，只檢索該對話上傳的 chunks。
     """
     chat_client, embed_client, index, index_dim, llm_model, embed_model, _index_name = _init_clients_and_index()
     qvec = _embed_query_common(
@@ -647,9 +653,14 @@ def retrieve_only(
         model=embed_model,
         output_dimensionality=index_dim,
     )
-    # 與主線 RAG 一致：多取幾筆再過濾、可選 dedup、LLM rerank（未來可加 hybrid 併用關鍵字/BM25）
+    query_filter = {"chat_id": {"$eq": chat_id}} if chat_id else None
     internal_top_k = max(top_k, int(os.getenv("RAG_INTERNAL_TOP_K", "20")))
-    res = index.query(vector=qvec, top_k=internal_top_k, include_metadata=True)
+    res = index.query(
+        vector=qvec,
+        top_k=internal_top_k,
+        include_metadata=True,
+        filter=query_filter,
+    )
     raw_matches = res.get("matches", []) or []
     if not raw_matches:
         return "(無檢索內容)", [], [], None

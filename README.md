@@ -102,7 +102,6 @@
 | **合約／法律** | `contract_risk_agent`、`contract_risk_with_law_search`、`tw_law_web_search` |
 | **圖表** | `create_chart`、`analyze_and_chart` |
 | **公司工具** | `financial_metrics`、`parse_dates_from_text`、`generate_quarterly_plan` |
-<<<<<<< HEAD
 | **專家** | `financial_report_agent`、`esg_agent`、`data_analyst_agent`、`contract_risk_agent` |
 | **合約＋法條** | `contract_risk_with_law_search`（RAG → 抽法條 → Tavily 司法院／網路 → Firecrawl 對比 → 自檢 → 免責聲明） |
 | **對話** | `small_talk`、`ask_web_vs_rag` |
@@ -170,7 +169,6 @@ StateGraph(RAGState)
 - **網路與網頁**：Tavily 一般搜尋、Firecrawl 單頁擷取與關鍵字搜尋擷取；意圖可由規則或可選 LLM 判斷。
 - **圖表**：依使用者描述或資料畫 ECharts；analyze_and_chart 從知識庫檢索後分析並可確認後產圖，可選 ECharts MCP 產 PNG。
 - **公司工具**：財報指標計算、從文字解析日期、產生季度計畫表。
-<<<<<<< HEAD
 - **專家**：財報／營運、ESG／法遵、資料分析（報表摘要／數據趨勢）、合約法遵審閱（條款、風險、民法／消保法）專用回答。
 - **合約審閱＋法條查詢**：問題為審閱合約、合約風險或分析／檢查契約時，走 **contract_risk_with_law_search**：RAG 取合約 → 抽法條字號 → **Tavily** 查司法院／網路條文與實務 → **Firecrawl** 擷取法條對比（選用）→ LLM 產出風險摘要、法條重點、建議、法條字號清單與來源列表 → **AI 自檢**（一致性與具體建議）→ 文末強制附加**免責聲明**。需 `TAVILY_API_KEY`（與選用 `FIRECRAWL_API_KEY`）。
 - **前端**：多對話、嚴格／非嚴格模式、上傳並灌入文件、檢索片段與圖表展示、**清空資料庫**按鈕；側欄可切換「對話」「Eval 運行記錄」「Eval 批次結果」。

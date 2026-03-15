@@ -58,12 +58,13 @@ def financial_report_agent(
     question: str,
     top_k: int = 8,
     history: List[Dict[str, Any]] | None = None,
+    chat_id: str | None = None,
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """財報／公司營運專家：強調指標說明、風險提示、表格輸出。
 
     回傳 (answer, sources, chunks)。無檢索結果時回傳說明文字與空列表。
     """
-    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k, chat_id=chat_id)
     if not context or context.strip() == "(無檢索內容)" or not chunks:
         return (
             "目前知識庫中沒有與財報或營運相關的檢索結果。請先灌入財報、法說會或營運文件，或改用一般問答。",
@@ -103,12 +104,13 @@ def esg_agent(
     question: str,
     top_k: int = 8,
     history: List[Dict[str, Any]] | None = None,
+    chat_id: str | None = None,
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """ESG／風險／法遵專家：針對 ESG、訴訟、供應鏈風險等嚴謹回答。
 
     回傳 (answer, sources, chunks)。無檢索結果時回傳說明文字與空列表。
     """
-    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k, chat_id=chat_id)
     if not context or context.strip() == "(無檢索內容)" or not chunks:
         return (
             "目前知識庫中沒有與 ESG、風險或法遵相關的檢索結果。請先灌入相關文件，或改用一般問答。",
@@ -188,12 +190,13 @@ def contract_risk_agent(
     top_k: int = 8,
     history: List[Dict[str, Any]] | None = None,
     strict: bool = True,
+    chat_id: str | None = None,
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """合約／採購法遵審閱專家：依檢索內容與對話歷史進行條款分析、風險標註與來源標記。
 
     回傳 (answer, sources, chunks)。strict 為 True 時採「合約法遵審閱助理」；為 False 時採「合約審閱顧問」。
     """
-    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k, chat_id=chat_id)
     if not context or context.strip() == "(無檢索內容)" or not chunks:
         return (
             "目前知識庫中沒有與合約或法遵相關的檢索結果。請先灌入合約、採購或法遵文件，或改用一般問答。",
@@ -235,12 +238,13 @@ def data_analyst_agent(
     question: str,
     top_k: int = 8,
     history: List[Dict[str, Any]] | None = None,
+    chat_id: str | None = None,
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """資料分析專家：針對「分析這份資料、報表摘要、數據趨勢」等問題，依檢索內容做分析摘要。
 
     回傳 (answer, sources, chunks)。無檢索結果時回傳說明文字與空列表。
     """
-    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k, chat_id=chat_id)
     if not context or context.strip() == "(無檢索內容)" or not chunks:
         return (
             "目前知識庫中沒有可分析的資料內容。請先灌入相關文件或報表，或改用一般問答／財報專家。",

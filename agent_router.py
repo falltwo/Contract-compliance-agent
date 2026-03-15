@@ -455,10 +455,11 @@ def _analyze_and_chart(
     question: str,
     top_k: int = 8,
     generate_chart: bool = True,
+    chat_id: str | None = None,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """從知識庫檢索財報/文件內容，用 LLM 分析可視化項目；若 generate_chart=True 再產出一張圖。
     回傳 (answer_text, chart_option/asked_chart_confirmation 或 None)。"""
-    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k)
+    context, sources, chunks, _ = retrieve_only(question=question, top_k=top_k, chat_id=chat_id)
     if not context or context.strip() == "(無檢索內容)" or not chunks:
         return "知識庫中找不到與「財報」或「資料」相關的內容，請先灌入文件（例如 data 裡的財報）或改用 list_sources 查看有哪些來源。", None
 
@@ -653,6 +654,7 @@ def route_and_answer(
     history: List[Dict[str, Any]] | None = None,
     strict: bool = True,
     chat_id: str | None = None,
+    rag_scope_chat_id: str | None = None,
     original_question: str | None = None,
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
@@ -663,6 +665,7 @@ def route_and_answer(
     目前支援：rag_search、research、small_talk、list_sources、search_similar、
     summarize_source、web_search、scrape_url、firecrawl_search、ask_web_vs_rag、create_chart、analyze_and_chart。
     chat_id：可選，用於 list_sources 時只列該對話灌入的來源。
+    rag_scope_chat_id：可選，若設定則 RAG/檢索僅限該對話上傳的 chunks，避免參雜其他來源。
     original_question / clarification_reply：當上一輪回傳 ask_web_vs_rag 後，呼叫端傳入
     使用者當時的問題與本輪回覆（例如「網路」或「知識庫」），會依此直接執行對應 tool，不再追問。
     chart_confirmation_question / chart_confirmation_reply：上一輪已回「需要幫我生成圖表嗎？」，
@@ -678,7 +681,7 @@ def route_and_answer(
             client, llm_model = _init_llm_client()
             # 以使用者本輪的具體要求為準（例如「好畫出各公司的營收、毛利率」），讓檢索與圖表依此產出
             query = reply if reply else (chart_confirmation_question.strip() or "財報 財務 產品線 營收 市佔率")
-            answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=True)
+            answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=True, chat_id=rag_scope_chat_id)
             if extra and extra.get("chart_option") and use_echarts_mcp():
                 ok, b64, _err = call_echarts_mcp(extra["chart_option"], width=800, height=500, output_type="png")
                 if ok and b64:
@@ -715,7 +718,7 @@ def route_and_answer(
                     return "\n\n---\n\n".join(parts), [], [], "firecrawl_search", None
             return _format_firecrawl_scrape_result(raw), [], [], "firecrawl_search", None
         if any(k in reply for k in ("知識庫", "文件", "內部", "rag")):
-            rag_state = run_rag(question=original_question, top_k=top_k, history=history, strict=False, chat_id=chat_id)
+            rag_state = run_rag(question=original_question, top_k=top_k, history=history, strict=False, chat_id=rag_scope_chat_id)
             return (
                 rag_state.get("answer", "") or "",
                 rag_state.get("sources", []) or [],
@@ -728,7 +731,7 @@ def route_and_answer(
 
     # 嚴格模式：直接走 rag_search，不做路由判斷
     if strict:
-        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=True, chat_id=chat_id)
+        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=True, chat_id=rag_scope_chat_id)
         answer = rag_state.get("answer", "") or ""
         sources = rag_state.get("sources", []) or []
         chunks = rag_state.get("chunks", []) or []
@@ -802,7 +805,7 @@ def route_and_answer(
         query = (tool_args.get("query") or question).strip() or "財報 財務 產品線 營收 市佔率"
         client, llm_model = _init_llm_client()
         # 先只分析並詢問「需要幫我生成圖表嗎？」，不直接產圖；使用者確認後由 chart_confirmation 流程產圖
-        answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=False)
+        answer, extra = _analyze_and_chart(client, llm_model, query, top_k=max(top_k, 8), generate_chart=False, chat_id=rag_scope_chat_id)
         return answer, [], [], "analyze_and_chart", extra
 
     if tool == "financial_metrics":
@@ -844,28 +847,28 @@ def route_and_answer(
     if tool == "financial_report_agent":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = financial_report_agent(
-            question=question, top_k=top_k_expert, history=history
+            question=question, top_k=top_k_expert, history=history, chat_id=rag_scope_chat_id
         )
         return answer, sources, chunks, "financial_report_agent", None
 
     if tool == "esg_agent":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = esg_agent(
-            question=question, top_k=top_k_expert, history=history
+            question=question, top_k=top_k_expert, history=history, chat_id=rag_scope_chat_id
         )
         return answer, sources, chunks, "esg_agent", None
 
     if tool == "data_analyst_agent":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = data_analyst_agent(
-            question=question, top_k=top_k_expert, history=history
+            question=question, top_k=top_k_expert, history=history, chat_id=rag_scope_chat_id
         )
         return answer, sources, chunks, "data_analyst_agent", None
 
     if tool == "contract_risk_agent":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = contract_risk_agent(
-            question=question, top_k=top_k_expert, history=history
+            question=question, top_k=top_k_expert, history=history, strict=strict, chat_id=rag_scope_chat_id
         )
         return answer, sources, chunks, "contract_risk_agent", None
 
@@ -877,7 +880,7 @@ def route_and_answer(
         return answer, sources, chunks, "contract_risk_with_law_search", None
 
     if tool == "rag_search":
-        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False, chat_id=chat_id)
+        rag_state = run_rag(question=question, top_k=top_k, history=history, strict=False, chat_id=rag_scope_chat_id)
         answer = rag_state.get("answer", "") or ""
         sources = rag_state.get("sources", []) or []
         chunks = rag_state.get("chunks", []) or []
@@ -886,7 +889,7 @@ def route_and_answer(
     if tool == "research":
         # Research Agent：先 RAG，信心低或無結果再補網搜，最後 LLM 整合並標註來源
         client, llm_model = _init_llm_client()
-        context_rag, sources_rag, chunks_rag, top_score = retrieve_only(question=question, top_k=top_k)
+        context_rag, sources_rag, chunks_rag, top_score = retrieve_only(question=question, top_k=top_k, chat_id=rag_scope_chat_id)
         threshold = float(os.getenv("RESEARCH_WEB_SCORE_THRESHOLD", "0.35"))
         need_web = (not chunks_rag) or (
             top_score is not None and top_score < threshold
