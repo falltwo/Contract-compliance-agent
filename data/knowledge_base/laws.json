@@ -1,0 +1,38 @@
+[
+  {
+    "law_id": "民法::第184條",
+    "law_name": "民法",
+    "article_no": "第184條",
+    "article_text": "因故意或過失，不法侵害他人之權利者，負損害賠償責任。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/civil-184",
+    "source_name": "local_laws_seed",
+    "fetched_at": "2026-04-15T10:00:00",
+    "content_hash": "4895482c5398c333c37b6632d50c96fbe56d7c6d545aa9be71fb525518424f1c"
+  },
+  {
+    "law_id": "民法::第227條",
+    "law_name": "民法",
+    "article_no": "第227條",
+    "article_text": "因可歸責於債務人之事由，致為不完全給付者，債權人得請求損害賠償。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/civil-227",
+    "source_name": "local_laws_seed",
+    "fetched_at": "2026-04-15T10:00:00",
+    "content_hash": "48f5023b0e564571f58b90580193efe21abc0f7fa76a10f0b09632a4dcc4f171"
+  },
+  {
+    "law_id": "個人資料保護法::第20條",
+    "law_name": "個人資料保護法",
+    "article_no": "第20條",
+    "article_text": "非公務機關對個人資料之利用，應於特定目的必要範圍內為之。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/pdpa-20",
+    "source_name": "local_laws_seed",
+    "fetched_at": "2026-04-15T10:00:00",
+    "content_hash": "069aca3d29140ac18bc900a73b66471147c84e717db53fe66f8beb5025032da3"
+  }
+]

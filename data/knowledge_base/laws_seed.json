@@ -1,0 +1,29 @@
+[
+  {
+    "law_name": "民法",
+    "article_no": "第184條",
+    "article_text": "因故意或過失，不法侵害他人之權利者，負損害賠償責任。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/civil-184",
+    "fetched_at": "2026-04-15T10:00:00"
+  },
+  {
+    "law_name": "民法",
+    "article_no": "第227條",
+    "article_text": "因可歸責於債務人之事由，致為不完全給付者，債權人得請求損害賠償。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/civil-227",
+    "fetched_at": "2026-04-15T10:00:00"
+  },
+  {
+    "law_name": "個人資料保護法",
+    "article_no": "第20條",
+    "article_text": "非公務機關對個人資料之利用，應於特定目的必要範圍內為之。",
+    "effective_status": "active",
+    "amended_at": "2024-01-01",
+    "source_url": "https://example.test/laws/pdpa-20",
+    "fetched_at": "2026-04-15T10:00:00"
+  }
+]

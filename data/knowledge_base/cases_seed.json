@@ -1,0 +1,22 @@
+[
+  {
+    "case_number": "112年度台上字第123號",
+    "court_name": "最高法院",
+    "judgment_date": "2024-01-18",
+    "case_type": "契約責任",
+    "summary": "本件涉及契約解除及損害賠償責任範圍認定。",
+    "full_text": "法院認為，當事人間契約關係成立後，一方未依約履行主要義務，致他方交易目的難以達成者，得主張解除契約並請求損害賠償。",
+    "source_url": "https://example.test/cases/supreme-123",
+    "fetched_at": "2026-04-15T10:00:00"
+  },
+  {
+    "case_number": "113年度上易字第45號",
+    "court_name": "臺灣高等法院",
+    "judgment_date": "2024-06-20",
+    "case_type": "保密義務",
+    "summary": "本件涉及保密條款違反後的損害賠償與舉證責任。",
+    "full_text": "法院認為，保密條款若約定明確，且可證明資訊外洩與損害間具相當因果關係，得依約請求賠償。",
+    "source_url": "https://example.test/cases/highcourt-45",
+    "fetched_at": "2026-04-15T10:00:00"
+  }
+]
