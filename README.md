@@ -20,7 +20,10 @@
 
 **1. 環境**
 
-- 複製 `.env.example` 為 `.env`，填入 **PINECONE_API_KEY**、**PINECONE_INDEX**、**GOOGLE_API_KEY**（必填）。
+- 複製 `.env.example` 為 `.env`。
+- 必填：**PINECONE_API_KEY**、**PINECONE_INDEX**。
+- 使用雲端 Gemini：填入 **GOOGLE_API_KEY**（`CHAT_PROVIDER=gemini`）。
+- 使用本地 Ollama（DGX 建議）：設 `CHAT_PROVIDER=ollama`、`OLLAMA_CHAT_MODEL=gemma3:27b`、`EMBEDDING_PROVIDER=ollama`、`OLLAMA_EMBED_MODEL=snowflake-arctic-embed2:568m`。
 - 合約＋法條查詢需 **TAVILY_API_KEY**；其餘見 `.env.example`。
 
 **2. 依賴與灌入**
@@ -52,7 +55,7 @@ uv run streamlit run streamlit_app.py
 | **合約＋法條** | **contract_risk_with_law_search**：RAG 取合約 → 抽法條字號 → Tavily 查司法院／網路 → 整合風險評估與法條重點 → AI 自檢 → 免責聲明。 |
 | **可觀測** | Eval 題集（`eval/eval_set.json`、`eval/eval_set_contract.json`）、`run_eval.py` 產出 routing 準確率、Tool 成功率、延遲；Streamlit 可檢視 Eval 運行記錄與批次結果。 |
 
-**技術棧**：Google Gemini（LLM + embedding）、Pinecone、LangGraph、Streamlit；可選 Tavily、Firecrawl、ECharts、Groq（Eval）。
+**技術棧**：Ollama（本地 LLM + embedding，可選）／Google Gemini（雲端）、Pinecone、LangGraph、Streamlit；可選 Tavily、Firecrawl、ECharts、Groq（Eval）。
 
 ### 系統架構
 
@@ -92,7 +95,7 @@ uv run streamlit run streamlit_app.py
 | **streamlit_app.py** | Streamlit 主程式（多對話、上傳灌入、問答、Eval 檢視）。 |
 | **agent_router.py** | 總管 Agent：工具路由（RAG、合約／法條、專家、圖表、網路等）。 |
 | **rag_graph.py** | RAG 核心：檢索、Hybrid、雙 Prompt、generate；`retrieve_only` 供專家使用。 |
-| **rag_common.py** | 共用：chunk、embed、Pinecone/Gemini 初始化、BM25 語料與 RRF 合併。 |
+| **rag_common.py** | 共用：chunk、embed、Pinecone + provider 初始化（Gemini/Ollama）、BM25 語料與 RRF 合併。 |
 | **expert_agents.py** | 專家子 Agent：合約法遵、財報、ESG、資料分析。 |
 | **eval/** | 題集（eval_set.json、eval_set_contract.json）與 run_eval.py；結果寫入 eval/runs/。 |
 | **data/** | 預設灌入來源（內含 sample.txt、sample_contract_NDA.txt 範例）。 |
@@ -153,7 +156,10 @@ Request flow from user input to output (intent routing → tools / experts → a
 
 **1. Environment**
 
-- Copy `.env.example` to `.env` and set **PINECONE_API_KEY**, **PINECONE_INDEX**, and **GOOGLE_API_KEY** (required).
+- Copy `.env.example` to `.env`.
+- Required: **PINECONE_API_KEY** and **PINECONE_INDEX**.
+- For Gemini cloud chat, set **GOOGLE_API_KEY** (`CHAT_PROVIDER=gemini`).
+- For local DGX/Ollama, set `CHAT_PROVIDER=ollama`, `OLLAMA_CHAT_MODEL=gemma3:27b`, `EMBEDDING_PROVIDER=ollama`, and `OLLAMA_EMBED_MODEL=snowflake-arctic-embed2:568m`.
 - For contract + law lookup, set **TAVILY_API_KEY**; see `.env.example` for the rest.
 
 **2. Dependencies and ingest**
@@ -185,7 +191,7 @@ In the browser you can: expand “Upload and ingest documents for this conversat
 | **Contract + law** | **contract_risk_with_law_search**: RAG fetches contract → extract law references → Tavily for Judicial Yuan / web → integrated risk assessment and law highlights → AI self-check → disclaimer. |
 | **Observability** | Eval sets (`eval/eval_set.json`, `eval/eval_set_contract.json`), `run_eval.py` outputs routing accuracy, tool success rate, latency; Streamlit shows Eval run log and batch results. |
 
-**Stack**: Google Gemini (LLM + embedding), Pinecone, LangGraph, Streamlit; optional Tavily, Firecrawl, ECharts, Groq (Eval).
+**Stack**: Ollama (local LLM + embedding, optional) / Google Gemini (cloud), Pinecone, LangGraph, Streamlit; optional Tavily, Firecrawl, ECharts, Groq (Eval).
 
 ### System architecture
 
@@ -225,7 +231,7 @@ Full steps and checklist: **[docs/Demo_操作指南.md](docs/Demo_操作指南.m
 | **streamlit_app.py** | Streamlit app (multi-chat, upload/ingest, Q&A, Eval view). |
 | **agent_router.py** | Main agent: tool routing (RAG, contract/law, experts, charts, web). |
 | **rag_graph.py** | RAG core: retrieval, Hybrid, dual prompt, generate; `retrieve_only` for experts. |
-| **rag_common.py** | Shared: chunk, embed, Pinecone/Gemini init, BM25 corpus and RRF merge. |
+| **rag_common.py** | Shared: chunk, embed, Pinecone + provider init (Gemini/Ollama), BM25 corpus and RRF merge. |
 | **expert_agents.py** | Expert agents: contract compliance, financial, ESG, data analysis. |
 | **eval/** | Eval sets and run_eval.py; results under eval/runs/. |
 | **data/** | Default ingest source (includes sample.txt, sample_contract_NDA.txt). |

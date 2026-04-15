@@ -18,6 +18,47 @@ from google.genai import types
 from pinecone import Pinecone
 
 
+def _normalize_ollama_base_url(base_url: str) -> str:
+    base = (base_url or "http://127.0.0.1:11434").rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return base
+
+
+class _EmbeddingItem:
+    def __init__(self, values: list[float]):
+        self.values = values
+
+
+class _EmbeddingResponse:
+    def __init__(self, embeddings: list[_EmbeddingItem]):
+        self.embeddings = embeddings
+
+
+class OllamaEmbeddingAdapter:
+    """Adapter that mimics Gemini embed response shape via Ollama OpenAI API."""
+
+    _is_ollama_embedding_adapter = True
+
+    def __init__(self, *, base_url: str, api_key: str = "ollama", timeout_sec: float = 240.0):
+        from openai import OpenAI
+
+        self._client = OpenAI(
+            base_url=_normalize_ollama_base_url(base_url),
+            api_key=api_key,
+            timeout=timeout_sec,
+        )
+
+    @property
+    def models(self) -> Any:
+        return self
+
+    def embed_content(self, *, model: str, contents: str | list[str], config: Any = None) -> _EmbeddingResponse:
+        inputs = contents if isinstance(contents, list) else [contents]
+        resp = self._client.embeddings.create(model=model, input=inputs)
+        return _EmbeddingResponse([_EmbeddingItem(list(item.embedding or [])) for item in resp.data])
+
+
 def chunk_text(text: str, *, chunk_size: int = 900, overlap: int = 150) -> list[str]:
     """先依段落/標題切大區塊，再在區塊內做長度切片，減少語意被拆散。"""
     cleaned = "\n".join(line.rstrip() for line in text.splitlines()).strip()
@@ -95,10 +136,10 @@ def format_context(matches: list[dict[str, Any]]) -> tuple[str, list[str], list[
     return ("\n\n---\n\n".join(blocks), sources, cleaned)
 
 
-def get_clients_and_index() -> tuple[Any, genai.Client, Any, int, str, str, str]:
-    """初始化 chat client（可為 Groq）+ Gemini embed client + Pinecone index。
+def get_clients_and_index() -> tuple[Any, Any, Any, int, str, str, str]:
+    """初始化 chat client + embed client + Pinecone index。
     回傳 (chat_client, embed_client, index, dim, llm_model, embed_model, index_name)。
-    embed_client 一律為 Gemini，供 embed_query / embed_texts 使用。
+    embed_client 可由 EMBEDDING_PROVIDER 切換（gemini / ollama）。
     """
     load_dotenv()
 
@@ -106,17 +147,31 @@ def get_clients_and_index() -> tuple[Any, genai.Client, Any, int, str, str, str]
 
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
     index_name = os.getenv("PINECONE_INDEX", "agent-index")
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower() or "gemini"
     google_api_key = os.getenv("GOOGLE_API_KEY")
-    embed_model = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
     dim_env = os.getenv("EMBED_DIM")
 
     if not pinecone_api_key:
         raise RuntimeError("缺少環境變數 PINECONE_API_KEY（請放在 .env）")
-    if not google_api_key:
-        raise RuntimeError("缺少環境變數 GOOGLE_API_KEY（請放在 .env）")
 
     chat_client, llm_model = get_chat_client_and_model()
-    embed_client = genai.Client(api_key=google_api_key)
+
+    if embedding_provider == "ollama":
+        embed_model = os.getenv("OLLAMA_EMBED_MODEL", "snowflake-arctic-embed2:568m")
+        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        ollama_api_key = os.getenv("OLLAMA_API_KEY", "ollama")
+        timeout_sec = float(os.getenv("OLLAMA_TIMEOUT_SEC", "240").strip() or "240")
+        embed_client = OllamaEmbeddingAdapter(
+            base_url=ollama_base_url,
+            api_key=ollama_api_key,
+            timeout_sec=timeout_sec,
+        )
+    else:
+        if not google_api_key:
+            raise RuntimeError("缺少環境變數 GOOGLE_API_KEY（請放在 .env）")
+        embed_model = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+        embed_client = genai.Client(api_key=google_api_key)
+
     pc = Pinecone(api_key=pinecone_api_key)
 
     existing = {i["name"] for i in pc.list_indexes().get("indexes", [])}
@@ -135,31 +190,43 @@ def get_clients_and_index() -> tuple[Any, genai.Client, Any, int, str, str, str]
     else:
         dim = index_dim
 
+    if embedding_provider == "ollama":
+        probe_res = embed_client.models.embed_content(model=embed_model, contents="dimension probe", config=None)
+        probe_embeddings = getattr(probe_res, "embeddings", None) or []
+        probe_dim = len(getattr(probe_embeddings[0], "values", []) or []) if probe_embeddings else 0
+        if probe_dim != dim:
+            raise RuntimeError(
+                f"Ollama embedding model '{embed_model}' 維度為 {probe_dim}，與 Pinecone index 維度 {dim} 不一致。"
+                " 請改用相同維度模型或重建 Pinecone index。"
+            )
+
     index = pc.Index(index_name)
     return chat_client, embed_client, index, dim, llm_model, embed_model, index_name
 
 
 def embed_query(
-    client: genai.Client,
+    client: Any,
     text: str,
     *,
     model: str,
     output_dimensionality: int,
 ) -> list[float]:
     """單一查詢的 embedding。"""
-    cfg = types.EmbedContentConfig(output_dimensionality=output_dimensionality)
+    cfg = None
+    if not getattr(client, "_is_ollama_embedding_adapter", False):
+        cfg = types.EmbedContentConfig(output_dimensionality=output_dimensionality)
     res = client.models.embed_content(model=model, contents=text, config=cfg)
     embeddings = getattr(res, "embeddings", None)
     if not embeddings:
-        raise RuntimeError("Gemini 回傳的 embeddings 為空")
+        raise RuntimeError("Embedding API 回傳的 embeddings 為空")
     vec = getattr(embeddings[0], "values", None)
     if vec is None:
-        raise RuntimeError("Gemini 回傳的 embedding 為空")
+        raise RuntimeError("Embedding API 回傳的向量為空")
     return list(vec)
 
 
 def embed_texts(
-    client: genai.Client,
+    client: Any,
     texts: list[str],
     *,
     model: str,
@@ -184,7 +251,9 @@ def embed_texts(
         except (TypeError, ValueError):
             delay = 0.0
     vectors: list[list[float]] = []
-    cfg = types.EmbedContentConfig(output_dimensionality=output_dimensionality)
+    cfg = None
+    if not getattr(client, "_is_ollama_embedding_adapter", False):
+        cfg = types.EmbedContentConfig(output_dimensionality=output_dimensionality)
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         for attempt in range(rate_limit_max_retries):

@@ -1,6 +1,6 @@
 # FastAPI 後端（階段 1 骨架）
 
-與專案根目錄的 `streamlit_app.py`、`agent_router.py`、`rag_graph.py` 等**並存**；設定沿用根目錄 `.env`（`GOOGLE_API_KEY`、`PINECONE_*` 等），另可選 `API_*` 變數控制 API 本身。
+與專案根目錄的 `streamlit_app.py`、`agent_router.py`、`rag_graph.py` 等**並存**；設定沿用根目錄 `.env`（`CHAT_PROVIDER`、`EMBEDDING_PROVIDER`、`PINECONE_*`、`GOOGLE_API_KEY` 或 `OLLAMA_*` 等），另可選 `API_*` 變數控制 API 本身。
 
 ## 目錄邊界
 
@@ -154,7 +154,7 @@ const { data } = await axios.post(
 1. **終端機 A**：`uv run streamlit run streamlit_app.py`（預設 `:8501`）
 2. **終端機 B**：`uv run uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
 
-兩者共用同一 `.env`、同一 Pinecone／Gemini 設定；僅 UI 入口不同。Vue 開發伺服器預設 `http://localhost:5173`，請在 `.env` 設定 `API_CORS_ORIGINS`（已預設含 5173）。
+兩者共用同一 `.env`、同一 Pinecone 與模型 provider 設定（Gemini 或 Ollama）；僅 UI 入口不同。Vue 開發伺服器預設 `http://localhost:5173`，請在 `.env` 設定 `API_CORS_ORIGINS`（已預設含 5173）。
 
 ## 錯誤格式
 
