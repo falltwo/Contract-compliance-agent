@@ -3,7 +3,6 @@ import type { RouteRecordRaw } from "vue-router";
 
 import AdminView from "../views/AdminView.vue";
 import ChatView from "../views/ChatView.vue";
-import EvalView from "../views/EvalView.vue";
 import SourcesView from "../views/SourcesView.vue";
 import UploadView from "../views/UploadView.vue";
 import { IS_ADMIN_TARGET, IS_FRONTEND_TARGET } from "@/config/runtime";
@@ -31,11 +30,6 @@ const adminRoutes = [
     path: "/admin",
     name: "admin",
     component: AdminView,
-  },
-  {
-    path: "/eval",
-    name: "eval",
-    component: EvalView,
   },
 ];
 

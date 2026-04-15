@@ -28,11 +28,6 @@ const adminNav = [
     title: "管理後台",
     desc: "查看服務狀態、模型、上傳工具與 EVAL。",
   },
-  {
-    to: "/eval",
-    title: "EVAL",
-    desc: "查看線上與批次評估紀錄。",
-  },
 ] as const;
 
 const nav = IS_ADMIN_TARGET

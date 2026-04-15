@@ -1,6 +1,7 @@
 export type AppTarget = "frontend" | "admin" | "full";
 
-const rawTarget = String(import.meta.env.VITE_APP_TARGET || "full").toLowerCase();
+// Safe default: frontend should never expose admin navigation accidentally.
+const rawTarget = String(import.meta.env.VITE_APP_TARGET || "frontend").toLowerCase();
 
 export const APP_TARGET: AppTarget =
   rawTarget === "frontend" || rawTarget === "admin" ? rawTarget : "full";
