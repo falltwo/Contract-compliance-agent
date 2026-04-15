@@ -27,7 +27,7 @@ test.describe("契約／E2E（選修）", () => {
     });
 
     await page.goto("/chat");
-    await page.getByLabel("訊息輸入").fill("你好");
+    await page.getByLabel("輸入訊息").fill("你好");
     await page.getByRole("button", { name: "送出" }).click();
     await expect(page.getByText("契約測試 mock 回覆")).toBeVisible();
   });
