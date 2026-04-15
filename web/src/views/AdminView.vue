@@ -105,14 +105,14 @@ function notifyApiError(prefix: string, err: unknown): void {
     pushToast({
       variant: "error",
       code: err.code,
-      message: `${prefix}: ${err.message}`,
+      message: `${prefix}：${err.message}`,
       details: err.details,
     });
     return;
   }
   pushToast({
     variant: "error",
-    message: `${prefix}: ${err instanceof Error ? err.message : String(err)}`,
+    message: `${prefix}：${err instanceof Error ? err.message : String(err)}`,
   });
 }
 
@@ -123,7 +123,7 @@ async function loadHealth() {
   } catch (err) {
     health.value = null;
     healthError.value = err;
-    notifyApiError("Failed to load health", err);
+    notifyApiError("讀取健康檢查失敗", err);
   }
 }
 
@@ -136,7 +136,7 @@ async function loadServices() {
   } catch (err) {
     serviceRows.value = [];
     servicesError.value = err;
-    notifyApiError("Failed to load service status", err);
+    notifyApiError("讀取服務狀態失敗", err);
   } finally {
     loadingServices.value = false;
   }
@@ -154,7 +154,7 @@ async function loadOllamaModels() {
   } catch (err) {
     modelRows.value = [];
     modelsError.value = err;
-    notifyApiError("Failed to load Ollama models", err);
+    notifyApiError("讀取 Ollama 模型失敗", err);
   } finally {
     loadingModels.value = false;
   }
@@ -174,7 +174,7 @@ async function loadDockerContainers() {
     dockerRows.value = [];
     dockerEngineAvailable.value = false;
     dockerError.value = err;
-    notifyApiError("Failed to load Docker containers", err);
+    notifyApiError("讀取 Docker 容器失敗", err);
   } finally {
     loadingDocker.value = false;
   }
@@ -194,15 +194,15 @@ async function restartServices(target: string[]) {
     const res = await postAdminRestartServices(target, { showLoading: true });
     serviceRows.value = asList(res.services);
     if (res.failed_services.length) {
-      throw new Error(`Restart failed: ${res.failed_services.join(", ")}`);
+      throw new Error(`重啟失敗：${res.failed_services.join(", ")}`);
     }
     pushToast({
       variant: "info",
-      message: `Restarted: ${res.restarted_services.join(", ") || "(none)"}`,
+      message: `已重啟：${res.restarted_services.join(", ") || "無"}`,
     });
   } catch (err) {
     restartError.value = err;
-    notifyApiError("Failed to restart service", err);
+    notifyApiError("重啟服務失敗", err);
   } finally {
     restarting.value = false;
     restartTarget.value = "";
@@ -222,7 +222,7 @@ async function loadSources() {
   } catch (err) {
     sourceRows.value = [];
     sourcesError.value = err;
-    notifyApiError("Failed to load sources", err);
+    notifyApiError("讀取知識來源失敗", err);
   } finally {
     loadingSources.value = false;
   }
@@ -247,10 +247,10 @@ async function submitUpload() {
       input.value = "";
     }
     await loadSources();
-    pushToast({ variant: "info", message: "Upload and ingest completed." });
+    pushToast({ variant: "info", message: "檔案上傳與 ingest 已完成。" });
   } catch (err) {
     uploadError.value = err;
-    notifyApiError("Upload / ingest failed", err);
+    notifyApiError("上傳 / ingest 失敗", err);
   } finally {
     uploading.value = false;
   }
@@ -265,7 +265,7 @@ async function loadConfig() {
   } catch (err) {
     evalLogEnabled.value = null;
     configError.value = err;
-    notifyApiError("Failed to load EVAL config", err);
+    notifyApiError("讀取 EVAL 設定失敗", err);
   } finally {
     loadingConfig.value = false;
   }
@@ -281,7 +281,7 @@ async function loadOnlineRuns() {
   } catch (err) {
     onlineRuns.value = [];
     onlineError.value = err;
-    notifyApiError("Failed to load online EVAL runs", err);
+    notifyApiError("讀取線上 EVAL 紀錄失敗", err);
   } finally {
     loadingRuns.value = false;
   }
@@ -306,7 +306,7 @@ async function loadBatchRuns() {
     selectedRunId.value = "";
     batchDetail.value = null;
     batchError.value = err;
-    notifyApiError("Failed to load batch run list", err);
+    notifyApiError("讀取批次 run 清單失敗", err);
   } finally {
     loadingBatch.value = false;
   }
@@ -324,7 +324,7 @@ async function loadBatchDetail(runId: string) {
   } catch (err) {
     batchDetail.value = null;
     detailError.value = err;
-    notifyApiError("Failed to load batch run detail", err);
+    notifyApiError("讀取批次 run 詳細資料失敗", err);
   } finally {
     loadingDetail.value = false;
   }
@@ -336,7 +336,7 @@ async function refreshEvalAll() {
 
 const metricsText = computed(() => {
   if (!batchDetail.value?.metrics) {
-    return "No metrics found.";
+    return "目前沒有 metrics 資料。";
   }
   return toPrettyJson(batchDetail.value.metrics);
 });
@@ -346,7 +346,7 @@ const resultCount = computed(() => asList(batchDetail.value?.results).length);
 const previewResultsText = computed(() => {
   const rows = asList(batchDetail.value?.results).slice(0, 20);
   if (!rows.length) {
-    return "No result rows.";
+    return "目前沒有結果資料。";
   }
   return rows.map((row) => toPrettyJson(row)).join("\n\n");
 });
@@ -361,9 +361,9 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 <template>
   <div class="page">
     <header class="ds-page-head">
-      <h1 class="ds-page-title">Admin Console (v1.0.0)</h1>
+      <h1 class="ds-page-title">管理後台（v1.0.0）</h1>
       <p class="ds-page-desc">
-        Unified operations page for health, services, Ollama, sources, ingest, and EVAL.
+        集中查看健康檢查、服務狀態、Ollama 模型、知識來源、上傳 ingest 與 EVAL。
       </p>
     </header>
 
@@ -376,7 +376,7 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
             :disabled="loadingInfra"
             @click="void refreshInfrastructure()"
           >
-            {{ loadingInfra ? "Refreshing..." : "Refresh Infra" }}
+            {{ loadingInfra ? "更新中..." : "重新整理基礎狀態" }}
           </button>
           <button
             type="button"
@@ -384,33 +384,33 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
             :disabled="restarting"
             @click="void restartServices([])"
           >
-            {{ restarting && !restartTarget ? "Restarting..." : "Restart API + Web" }}
+            {{ restarting && !restartTarget ? "重啟中..." : "重啟 API + 前端" }}
           </button>
           <RouterLink to="/chat" class="ds-btn ds-btn--secondary">
-            Open Chat
+            前往對話
           </RouterLink>
         </div>
       </div>
-      <p v-if="restarting" class="hint">Restart target: {{ restartTarget || "default set" }}</p>
-      <ApiErrorBlock v-if="restartError" :error="restartError" title="Restart failed" />
+      <p v-if="restarting" class="hint">重啟目標：{{ restartTarget || "預設服務組" }}</p>
+      <ApiErrorBlock v-if="restartError" :error="restartError" title="重啟失敗" />
     </section>
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Health</h2>
+        <h2 class="section-title">健康檢查</h2>
       </div>
-      <ApiErrorBlock v-if="healthError" :error="healthError" title="Health check failed" />
+      <ApiErrorBlock v-if="healthError" :error="healthError" title="健康檢查讀取失敗" />
       <div v-else-if="health" class="stat-grid">
         <div class="stat-item">
-          <span class="k">status</span>
+          <span class="k">狀態</span>
           <strong class="v">{{ health.status }}</strong>
         </div>
         <div class="stat-item">
-          <span class="k">service</span>
+          <span class="k">服務</span>
           <strong class="v">{{ health.service }}</strong>
         </div>
         <div class="stat-item">
-          <span class="k">version</span>
+          <span class="k">版本</span>
           <strong class="v">{{ health.version }}</strong>
         </div>
       </div>
@@ -418,26 +418,26 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Service Status + Restart</h2>
+        <h2 class="section-title">服務狀態與重啟</h2>
         <button
           type="button"
           class="ds-btn ds-btn--secondary"
           :disabled="loadingServices"
           @click="void loadServices()"
         >
-          {{ loadingServices ? "Loading..." : "Refresh Services" }}
+          {{ loadingServices ? "讀取中..." : "重新整理服務狀態" }}
         </button>
       </div>
-      <ApiErrorBlock v-if="servicesError" :error="servicesError" title="Service query failed" />
+      <ApiErrorBlock v-if="servicesError" :error="servicesError" title="服務狀態查詢失敗" />
       <table v-else class="table">
         <thead>
           <tr>
-            <th>service</th>
-            <th>active</th>
-            <th>sub</th>
-            <th>enabled</th>
-            <th>description / error</th>
-            <th>action</th>
+            <th>服務名稱</th>
+            <th>主狀態</th>
+            <th>子狀態</th>
+            <th>啟用狀態</th>
+            <th>描述 / 錯誤</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -454,7 +454,7 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
                 :disabled="restarting"
                 @click="void restartServices([row.name])"
               >
-                Restart
+                重啟
               </button>
             </td>
           </tr>
@@ -464,27 +464,27 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Ollama Models</h2>
+        <h2 class="section-title">Ollama 模型</h2>
         <button
           type="button"
           class="ds-btn ds-btn--secondary"
           :disabled="loadingModels"
           @click="void loadOllamaModels()"
         >
-          {{ loadingModels ? "Loading..." : "Refresh Models" }}
+          {{ loadingModels ? "讀取中..." : "重新整理模型列表" }}
         </button>
       </div>
-      <ApiErrorBlock v-if="modelsError" :error="modelsError" title="Ollama query failed" />
+      <ApiErrorBlock v-if="modelsError" :error="modelsError" title="Ollama 查詢失敗" />
       <div v-else-if="modelRows.length === 0" class="empty">
-        No models found.
+        目前沒有可顯示的模型。
       </div>
       <table v-else class="table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>id</th>
-            <th>size</th>
-            <th>modified</th>
+            <th>名稱</th>
+            <th>ID</th>
+            <th>大小</th>
+            <th>更新時間</th>
           </tr>
         </thead>
         <tbody>
@@ -500,32 +500,32 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Docker Containers</h2>
+        <h2 class="section-title">Docker 容器</h2>
         <button
           type="button"
           class="ds-btn ds-btn--secondary"
           :disabled="loadingDocker"
           @click="void loadDockerContainers()"
         >
-          {{ loadingDocker ? "Loading..." : "Refresh Containers" }}
+          {{ loadingDocker ? "讀取中..." : "重新整理容器狀態" }}
         </button>
       </div>
       <p class="hint">
-        Docker engine:
-        <strong>{{ dockerEngineAvailable == null ? "unknown" : dockerEngineAvailable ? "available" : "unavailable" }}</strong>
+        Docker 引擎：
+        <strong>{{ dockerEngineAvailable == null ? "未知" : dockerEngineAvailable ? "可用" : "不可用" }}</strong>
       </p>
-      <ApiErrorBlock v-if="dockerError" :error="dockerError" title="Docker query failed" />
+      <ApiErrorBlock v-if="dockerError" :error="dockerError" title="Docker 查詢失敗" />
       <div v-else-if="dockerRows.length === 0" class="empty">
-        No running container found.
+        目前沒有執行中的容器。
       </div>
       <table v-else class="table">
         <thead>
           <tr>
-            <th>id</th>
-            <th>name</th>
-            <th>image</th>
-            <th>status</th>
-            <th>state</th>
+            <th>ID</th>
+            <th>名稱</th>
+            <th>映像檔</th>
+            <th>狀態</th>
+            <th>執行階段</th>
           </tr>
         </thead>
         <tbody>
@@ -542,13 +542,13 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Knowledge Sources</h2>
+        <h2 class="section-title">知識來源</h2>
         <div class="section-actions">
           <input
             v-model="sourceFilterChatId"
             type="text"
             class="ds-select text-input"
-            placeholder="Optional chat_id"
+            placeholder="可選填 chat_id"
           >
           <button
             type="button"
@@ -556,19 +556,19 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
             :disabled="loadingSources"
             @click="void loadSources()"
           >
-            {{ loadingSources ? "Loading..." : "Refresh Sources" }}
+            {{ loadingSources ? "讀取中..." : "重新整理來源列表" }}
           </button>
         </div>
       </div>
-      <ApiErrorBlock v-if="sourcesError" :error="sourcesError" title="Sources query failed" />
+      <ApiErrorBlock v-if="sourcesError" :error="sourcesError" title="知識來源查詢失敗" />
       <div v-else-if="sourceRows.length === 0" class="empty">
-        No source rows found.
+        目前沒有來源資料。
       </div>
       <table v-else class="table">
         <thead>
           <tr>
-            <th>source</th>
-            <th>chunk_count</th>
+            <th>來源檔案</th>
+            <th>切片數量</th>
             <th>chat_id</th>
           </tr>
         </thead>
@@ -584,7 +584,7 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
 
     <section class="ds-card card">
       <div class="section-head">
-        <h2 class="section-title">Upload / Ingest</h2>
+        <h2 class="section-title">上傳 / Ingest</h2>
       </div>
       <form class="upload-form" @submit.prevent="void submitUpload()">
         <input
@@ -599,17 +599,17 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
           v-model="uploadChatId"
           type="text"
           class="ds-select text-input"
-          placeholder="Optional chat_id"
+          placeholder="可選填 chat_id"
           :disabled="uploading"
         >
         <button type="submit" class="ds-btn ds-btn--primary" :disabled="uploading">
-          {{ uploading ? "Uploading..." : "Upload and Ingest" }}
+          {{ uploading ? "上傳中..." : "上傳並寫入知識庫" }}
         </button>
       </form>
-      <ApiErrorBlock v-if="uploadError" :error="uploadError" title="Upload / ingest failed" />
+      <ApiErrorBlock v-if="uploadError" :error="uploadError" title="上傳 / ingest 失敗" />
       <div v-if="uploadResult" class="result-box">
-        <p>chunks_ingested: <strong>{{ uploadResult.chunks_ingested }}</strong></p>
-        <p>sources_updated: <strong>{{ uploadResult.sources_updated?.length ?? 0 }}</strong></p>
+        <p>已寫入切片數：<strong>{{ uploadResult.chunks_ingested }}</strong></p>
+        <p>已更新來源數：<strong>{{ uploadResult.sources_updated?.length ?? 0 }}</strong></p>
       </div>
     </section>
 
@@ -622,18 +622,18 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
           :disabled="loadingConfig || loadingRuns || loadingBatch"
           @click="void refreshEvalAll()"
         >
-          Refresh EVAL
+          重新整理 EVAL
         </button>
       </div>
 
       <p class="hint">
-        EVAL_LOG:
-        <strong>{{ evalLogEnabled == null ? "unknown" : evalLogEnabled ? "enabled" : "disabled" }}</strong>
+        EVAL_LOG：
+        <strong>{{ evalLogEnabled == null ? "未知" : evalLogEnabled ? "啟用" : "停用" }}</strong>
       </p>
-      <ApiErrorBlock v-if="configError" :error="configError" title="EVAL config failed" />
+      <ApiErrorBlock v-if="configError" :error="configError" title="EVAL 設定讀取失敗" />
 
       <div class="section-head">
-        <h3 class="sub-title">Online Runs</h3>
+        <h3 class="sub-title">線上紀錄</h3>
         <div class="section-actions">
           <select v-model.number="onlineLimit" class="ds-select">
             <option :value="50">50</option>
@@ -647,19 +647,19 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
             :disabled="loadingRuns"
             @click="void loadOnlineRuns()"
           >
-            Refresh Online Runs
+            重新整理線上紀錄
           </button>
         </div>
       </div>
-      <ApiErrorBlock v-if="onlineError" :error="onlineError" title="Online runs query failed" />
+      <ApiErrorBlock v-if="onlineError" :error="onlineError" title="線上紀錄查詢失敗" />
       <table v-else-if="onlineRuns.length" class="table">
         <thead>
           <tr>
-            <th>timestamp</th>
-            <th>tool</th>
-            <th>latency</th>
-            <th>sources</th>
-            <th>question</th>
+            <th>時間</th>
+            <th>工具</th>
+            <th>延遲</th>
+            <th>來源數</th>
+            <th>問題</th>
           </tr>
         </thead>
         <tbody>
@@ -672,10 +672,10 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
           </tr>
         </tbody>
       </table>
-      <p v-else class="empty">No online EVAL records found.</p>
+      <p v-else class="empty">目前沒有線上 EVAL 紀錄。</p>
 
       <div class="section-head">
-        <h3 class="sub-title">Batch Runs</h3>
+        <h3 class="sub-title">批次執行</h3>
         <div class="section-actions">
           <button
             type="button"
@@ -683,11 +683,11 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
             :disabled="loadingBatch"
             @click="void loadBatchRuns()"
           >
-            Refresh Batch List
+            重新整理批次清單
           </button>
         </div>
       </div>
-      <ApiErrorBlock v-if="batchError" :error="batchError" title="Batch list query failed" />
+      <ApiErrorBlock v-if="batchError" :error="batchError" title="批次清單查詢失敗" />
       <div v-else-if="batchRunIds.length" class="section-actions">
         <select v-model="selectedRunId" class="ds-select run-select">
           <option v-for="id in batchRunIds" :key="id" :value="id">
@@ -700,17 +700,17 @@ void Promise.all([refreshInfrastructure(), loadSources(), refreshEvalAll()]);
           :disabled="loadingDetail || !selectedRunId"
           @click="void loadBatchDetail(selectedRunId)"
         >
-          Reload Detail
+          重新載入明細
         </button>
       </div>
-      <p v-else class="empty">No batch run found.</p>
+      <p v-else class="empty">目前沒有批次執行紀錄。</p>
 
-      <ApiErrorBlock v-if="detailError" :error="detailError" title="Batch detail query failed" />
+      <ApiErrorBlock v-if="detailError" :error="detailError" title="批次明細查詢失敗" />
       <div v-else-if="batchDetail" class="result-box">
-        <p>run_id: <span class="mono">{{ batchDetail.run_id }}</span> | results: {{ resultCount }}</p>
+        <p>run_id：<span class="mono">{{ batchDetail.run_id }}</span> ｜ 結果筆數：{{ resultCount }}</p>
         <h4 class="mini-title">metrics.json</h4>
         <pre class="json-block">{{ metricsText }}</pre>
-        <h4 class="mini-title">results (first 20 rows)</h4>
+        <h4 class="mini-title">results（前 20 筆）</h4>
         <pre class="json-block">{{ previewResultsText }}</pre>
       </div>
     </section>

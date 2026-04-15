@@ -6,40 +6,40 @@ import ConversationListPanel from "@/components/layout/ConversationListPanel.vue
 const nav = [
   {
     to: "/chat",
-    title: "Chat",
-    desc: "Ask questions and get contract analysis responses.",
+    title: "對話",
+    desc: "提出問題並查看合約分析回應。",
   },
   {
     to: "/upload",
-    title: "Upload",
-    desc: "Upload files and ingest chunks into the knowledge base.",
+    title: "上傳檔案",
+    desc: "上傳文件並寫入知識庫切片。",
   },
   {
     to: "/sources",
-    title: "Sources",
-    desc: "Inspect indexed files and chunk counts.",
+    title: "知識來源",
+    desc: "查看已建立索引的檔案與切片數量。",
   },
   {
     to: "/admin",
-    title: "Admin",
-    desc: "Service status, model checks, ingest tools, and EVAL.",
+    title: "管理後台",
+    desc: "查看服務狀態、模型、上傳工具與 EVAL。",
   },
 ] as const;
 </script>
 
 <template>
   <div class="shell">
-    <aside class="sidebar" aria-label="Primary navigation">
+    <aside class="sidebar" aria-label="主要導覽">
       <div class="brand">
         <p class="brand-title font-display">
-          Contract Compliance Agent
+          合約法遵助理
         </p>
       </div>
       <ConversationListPanel />
       <p class="nav-section-label">
-        Navigation
+        功能選單
       </p>
-      <nav class="nav" aria-label="Route links">
+      <nav class="nav" aria-label="頁面導覽">
         <RouterLink
           v-for="item in nav"
           :key="item.to"
