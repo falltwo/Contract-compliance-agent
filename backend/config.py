@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     )
 
     api_title: str = Field(default="agent-demo API", validation_alias="API_TITLE")
-    api_version: str = Field(default="0.1.0", validation_alias="API_VERSION")
+    api_version: str = Field(default="1.0.0", validation_alias="API_VERSION")
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
 

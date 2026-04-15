@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 
+import AdminView from "../views/AdminView.vue";
 import ChatView from "../views/ChatView.vue";
 import EvalView from "../views/EvalView.vue";
 import SourcesView from "../views/SourcesView.vue";
@@ -23,6 +24,11 @@ const router = createRouter({
       path: "/sources",
       name: "sources",
       component: SourcesView,
+    },
+    {
+      path: "/admin",
+      name: "admin",
+      component: AdminView,
     },
     {
       path: "/eval",

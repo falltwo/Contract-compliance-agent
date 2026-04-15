@@ -3,6 +3,16 @@ from backend.schemas.ingest import IngestUploadResponse, SourceEntry, SourcesLis
 from backend.schemas.common import ErrorDetail, ErrorResponse, ok_response
 from backend.schemas.health import HealthResponse
 from backend.schemas.stub import StubInfoResponse
+from backend.schemas.admin import (
+    ServiceStatus,
+    ServicesStatusResponse,
+    ServicesRestartRequest,
+    ServicesRestartResponse,
+    OllamaModelInfo,
+    OllamaModelsResponse,
+    DockerContainerInfo,
+    DockerContainersResponse,
+)
 
 __all__ = [
     "ChatMessage",
@@ -16,5 +26,13 @@ __all__ = [
     "ErrorResponse",
     "HealthResponse",
     "StubInfoResponse",
+    "ServiceStatus",
+    "ServicesStatusResponse",
+    "ServicesRestartRequest",
+    "ServicesRestartResponse",
+    "OllamaModelInfo",
+    "OllamaModelsResponse",
+    "DockerContainerInfo",
+    "DockerContainersResponse",
     "ok_response",
 ]

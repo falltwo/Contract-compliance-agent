@@ -2,10 +2,12 @@
 
 本文件整理本輪已完成並推送到 `main` 的更新，重點涵蓋：
 
+- 版本已正式提升為 `v1.0.0`
 - `weck06-0410`、`ewiwi` 兩個分支已併回 `main`
 - 專案已支援 Ollama 作為本地聊天模型與 embedding provider
 - 專案已補上 DGX `FastAPI + Vue` 的內部服務化部署方案
 - 已完成一輪實機部署驗證與維運腳本強化
+- 新增 `/admin` 管理後台頁，並將 EVAL 整合到同一頁
 
 ## 1. 近期 commit 摘要
 
@@ -124,4 +126,3 @@ bash scripts/deploy_contract_agent.sh
 - 若需要正式站型入口，可將 `/` 與 `/api` 收斂到單一反向代理
 - 若 Pinecone 後續希望降成本或離線化，可再評估改為本地向量庫
 - 若需要更正式的維運流程，可在現有部署腳本上再接 CI/CD
-

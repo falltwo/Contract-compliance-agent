@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.api.routes.chat import router as chat_router
+from backend.api.routes.admin import router as admin_router
 from backend.api.routes.eval import router as eval_router
 from backend.api.routes.health import router as health_router
 from backend.api.routes.ingest import router as ingest_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(chat_router)
+    app.include_router(admin_router)
     app.include_router(ingest_router)
     app.include_router(eval_router)
     app.include_router(stub_router)

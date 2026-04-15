@@ -8,6 +8,8 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+目前正式版本：**v1.0.0**
+
 ### 系統流程
 
 從使用者輸入到輸出的請求流程（意圖路由 → 各工具／專家 → 回答與引用）：
@@ -64,9 +66,11 @@ bash scripts/deploy_contract_agent.sh
 
 ## 近期更新（2026-04-15）
 
+- 正式版本升級為 **v1.0.0**
 - `main` 已合併 `weck06-0410` 與 `ewiwi`
 - 已支援 `CHAT_PROVIDER=ollama` 與 `EMBEDDING_PROVIDER=ollama`
 - 已補齊 DGX `FastAPI + Vue` 常駐部署所需的 `systemd` 模板、安裝腳本與部署腳本
+- 已新增 `/admin` 管理後台：服務狀態、Ollama 模型、來源清單、上傳 ingest、健康檢查與 EVAL
 - 前端 production 已支援 runtime API host 推導，後端也補上 `API_CORS_ORIGIN_REGEX`
 - 完整更新總結見 [docs/update-summary-2026-04-15.md](docs/update-summary-2026-04-15.md)
 - 文件索引見 [docs/README.md](docs/README.md)
@@ -170,6 +174,8 @@ uv run python eval/run_eval.py --groq
 > Complete a first-pass contract review in **minutes**: automatically flag risk clauses, suggest amendments, and cite legal provisions—with optional scope-limited search (this conversation’s uploads only) for efficiency and traceability.
 
 This project is an entry for the **2026 Smart Innovation Awards (AI Application)**. It combines **RAG and a multi-tool agent** for contract risk analysis, judicial law lookup (e.g. Taiwan’s Judicial Yuan), knowledge-base Q&A, and Eval-based validation. The UI is a Streamlit multi-turn chat that supports uploading contracts (.txt / .md / .pdf / .docx) and one-click review or natural-language questions.
+
+Current release: **v1.0.0**
 
 ### System flow
 
