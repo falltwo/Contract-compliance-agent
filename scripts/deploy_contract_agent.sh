@@ -9,6 +9,7 @@ WEB_SERVICE="${WEB_SERVICE:-contract-agent-web.service}"
 API_PORT="${API_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-4173}"
 UV_ENV_FILE="${UV_ENV_FILE:-$HOME/.local/bin/env}"
+HEALTH_TIMEOUT_SEC="${HEALTH_TIMEOUT_SEC:-30}"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -46,7 +47,15 @@ cd "${PROJECT_DIR}"
 sudo -n systemctl daemon-reload
 sudo -n systemctl restart "${API_SERVICE}" "${WEB_SERVICE}"
 
-curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null
+health_url="http://127.0.0.1:${API_PORT}/health"
+deadline=$((SECONDS + HEALTH_TIMEOUT_SEC))
+until curl -fsS "${health_url}" >/dev/null; do
+  if (( SECONDS >= deadline )); then
+    echo "API health check timeout after ${HEALTH_TIMEOUT_SEC}s: ${health_url}" >&2
+    exit 1
+  fi
+  sleep 1
+done
 
 lan_ip="$(hostname -I | awk '{print $1}')"
 tailscale_ip=""
