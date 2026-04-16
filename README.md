@@ -99,11 +99,18 @@ Copy-Item .env.example .env
 如果你要直接使用本專案預設推薦的本地模型，可在 `.env` 中採用這組設定：
 
 ```env
+PINECONE_INDEX=weck06
 CHAT_PROVIDER=ollama
 OLLAMA_CHAT_MODEL=gemma3:27b
 EMBEDDING_PROVIDER=ollama
 OLLAMA_EMBED_MODEL=snowflake-arctic-embed2:568m
 ```
+
+### 團隊共用 `.env` 規範（避免組員誤改）
+
+1. `PINECONE_INDEX` 在共用環境固定為 `weck06`，未經維運人員同意不得修改。
+2. 需要做個人實驗時，只能改自己本機未追蹤的 `.env`，不能改 `.env.example`。
+3. 不得把個人 / 臨時 index 名稱提交到 `main`。
 
 多模型分流已內建在後端，使用者不需要在前端手動選模型。你只要在 `.env` 設定分流規則即可：
 
