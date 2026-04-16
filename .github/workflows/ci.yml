@@ -65,3 +65,43 @@ jobs:
       - name: E2E（health + chat mock）
         run: npm run test:e2e
         working-directory: web
+
+  deploy:
+    name: Deploy to DGX
+    runs-on: ubuntu-latest
+    needs: [pytest, web, playwright]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    concurrency:
+      group: deploy-dgx
+      cancel-in-progress: false
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+          args: --ephemeral
+
+      - name: Wait for Tailscale peer path
+        run: tailscale ping --c 3 ${{ secrets.DGX_TAILSCALE_IP }} || true
+
+      - name: Install SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Pin DGX host key
+        run: |
+          printf '%s %s\n' "${{ secrets.DGX_TAILSCALE_IP }}" "${{ secrets.DGX_HOST_KEY }}" >> ~/.ssh/known_hosts
+
+      - name: Run deploy script on DGX
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            ${{ secrets.DGX_SSH_USER }}@${{ secrets.DGX_TAILSCALE_IP }} \
+            "bash --login /home/falltwo/Code_space/Contract-compliance-agent/scripts/deploy_contract_agent.sh"
