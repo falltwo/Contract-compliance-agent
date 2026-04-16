@@ -80,7 +80,7 @@ jobs:
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          args: --ephemeral --accept-routes
+          args: --accept-routes
 
       - name: Wait for Tailscale peer path
         run: tailscale ping --c 3 ${{ secrets.DGX_TAILSCALE_IP }} || true
