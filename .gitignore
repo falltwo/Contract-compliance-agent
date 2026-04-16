@@ -38,6 +38,9 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# ---------- Claude Code ----------
+.claude/
+
 # ---------- IDE / 編輯器 ----------
 .cursor/
 .idea/
