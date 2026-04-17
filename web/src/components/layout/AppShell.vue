@@ -119,6 +119,11 @@ function triggerUploadPicker() {
   }
 }
 
+function newConversation() {
+  const id = conversation.addConversation();
+  void router.push({ path: "/chat", query: { chat: id } });
+}
+
 async function onUploadFileChange(event: Event) {
   const input = event.target as HTMLInputElement | null;
   const files = input?.files ? Array.from(input.files) : [];
@@ -257,14 +262,24 @@ onMounted(() => {
           >
         </label>
 
-        <button
-          type="button"
-          class="sidebar-upload"
-          :disabled="uploadBusy"
-          @click="triggerUploadPicker"
-        >
-          {{ uploadBusy ? "上傳中" : "上傳" }}
-        </button>
+        <div class="sidebar-actions">
+          <button
+            type="button"
+            class="sidebar-upload"
+            :disabled="uploadBusy"
+            @click="triggerUploadPicker"
+          >
+            {{ uploadBusy ? "上傳中" : "上傳" }}
+          </button>
+          <button
+            type="button"
+            class="sidebar-new-chat"
+            title="新對話"
+            @click="newConversation"
+          >
+            +
+          </button>
+        </div>
 
         <section class="doc-group">
           <div class="doc-group__head">
@@ -542,11 +557,16 @@ onMounted(() => {
   font: inherit;
 }
 
+.sidebar-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .sidebar-upload {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  flex: 1;
   min-height: 38px;
   border: 1px solid #d7e2ee;
   border-radius: 10px;
@@ -564,6 +584,27 @@ onMounted(() => {
 .sidebar-upload:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.sidebar-new-chat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  min-height: 38px;
+  flex-shrink: 0;
+  border: 1px solid #d7e2ee;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #10293f;
+  font-size: 1.25rem;
+  font-weight: 400;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sidebar-new-chat:hover {
+  background: #f8fbff;
 }
 
 .doc-group {
