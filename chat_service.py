@@ -13,6 +13,21 @@ from eval_log import log_run as eval_log_run
 
 logger = logging.getLogger(__name__)
 
+_TIMEOUT_MSG = (
+    "後端分析逾時，可能是法條查詢、外部搜尋或模型回應卡住。請重新分析，或改用較小範圍的問題再試一次。"
+)
+
+
+def _is_timeout_exc(exc: BaseException) -> bool:
+    """判斷是否為任何類型的 timeout 例外（futures / openai / httpx / requests）。"""
+    type_name = type(exc).__name__
+    if "Timeout" in type_name or "timeout" in type_name:
+        return True
+    module = getattr(type(exc), "__module__", "") or ""
+    if any(m in module for m in ("openai", "httpx", "requests", "urllib")):
+        return True
+    return False
+
 
 def _route_and_answer_with_timeout(
     **kwargs: Any,
@@ -24,14 +39,15 @@ def _route_and_answer_with_timeout(
         return future.result(timeout=timeout_sec)
     except FuturesTimeoutError:
         future.cancel()
-        logger.warning("route_and_answer timed out after %.1fs", timeout_sec)
-        return (
-            "後端分析逾時，可能是法條查詢、外部搜尋或模型回應卡住。請重新分析，或改用較小範圍的問題再試一次。",
-            [],
-            [],
-            "backend_timeout",
-            {"timed_out": True, "timeout_sec": timeout_sec},
-        )
+        logger.warning("route_and_answer timed out after %.1fs (route-level)", timeout_sec)
+        return (_TIMEOUT_MSG, [], [], "backend_timeout", {"timed_out": True, "timeout_sec": timeout_sec})
+    except Exception as exc:
+        future.cancel()
+        if _is_timeout_exc(exc):
+            logger.warning("route_and_answer raised timeout exception: %s: %s", type(exc).__name__, exc)
+            return (_TIMEOUT_MSG, [], [], "backend_timeout", {"timed_out": True, "timeout_sec": timeout_sec})
+        logger.error("route_and_answer raised unexpected exception: %s", exc, exc_info=True)
+        raise
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
