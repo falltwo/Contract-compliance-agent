@@ -10,9 +10,10 @@ User=__SERVICE_USER__
 WorkingDirectory=__WEB_DIR__
 Environment=HOME=__USER_HOME__
 Environment=NODE_ENV=production
-ExecStart=/bin/bash -lc 'cd __WEB_DIR__ && npm run preview:admin -- --host 0.0.0.0 --port __WEB_ADMIN_PORT__'
+ExecStartPre=/bin/bash -c 'fuser -k __WEB_ADMIN_PORT__/tcp 2>/dev/null || true'
+ExecStart=/bin/bash -lc 'cd __WEB_DIR__ && npm run preview:admin -- --host 0.0.0.0 --port __WEB_ADMIN_PORT__ --strictPort'
 Restart=always
-RestartSec=5
+RestartSec=3
 StandardOutput=journal
 StandardError=journal
 

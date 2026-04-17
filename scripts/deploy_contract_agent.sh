@@ -64,7 +64,8 @@ npm ci
 npm run build
 
 cd "${PROJECT_DIR}"
-sudo -n systemctl daemon-reload
+# Re-render and install systemd unit files so template changes take effect on every deploy.
+START_NOW=0 bash "${SCRIPT_DIR}/install_dgx_services.sh"
 sudo -n systemctl restart "${API_SERVICE}" "${WEB_FRONT_SERVICE}" "${WEB_ADMIN_SERVICE}"
 
 # ── 健康檢查：等待 API 就緒（單次請求有 --max-time 保護；接受 ok 或 degraded）
