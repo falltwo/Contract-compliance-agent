@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import { ApiError } from "@/api/client";
 import { postChat } from "@/api/chat";
@@ -28,12 +29,14 @@ type RiskCard = {
   id: string;
   title: string;
   summary: string;
+  suggestion: string;
   severity: "high" | "medium" | "low";
   section: string;
 };
 
 const conversation = useConversationStore();
 const settings = useSettingsStore();
+const route = useRoute();
 
 const input = ref("");
 const sending = ref(false);
@@ -122,24 +125,68 @@ const canGoToNextPreviewPage = computed(
   () => currentPreviewPage.value < previewPages.value.length - 1,
 );
 
+function extractField(block: string, label: string): string {
+  const re = new RegExp(`【${label}】([\\s\\S]*?)(?=【|$)`);
+  return (block.match(re)?.[1] ?? "").replace(/\n+/g, " ").trim();
+}
+
+function severityFromLabel(label: string): RiskCard["severity"] {
+  if (/高風險/.test(label)) return "high";
+  if (/中風險/.test(label)) return "medium";
+  return "low";
+}
+
+function parseAnswerToCards(answer: string): RiskCard[] {
+  // Match each 第 X 條 block
+  const blocks = answer.split(/(?=第\s*\d+\s*條[：:])/).filter((b) => /第\s*\d+\s*條/.test(b));
+  if (blocks.length === 0) return [];
+
+  return blocks.slice(0, 5).map((block, index) => {
+    const titleMatch = block.match(/第\s*\d+\s*條[：:]\s*([^\n]+)/);
+    const title = titleMatch?.[1]?.trim() || `條款 ${index + 1}`;
+    const typeLabel = extractField(block, "條款類型");
+    const riskLabel = extractField(block, "風險等級");
+    const analysis = extractField(block, "法務實務推演");
+    const suggestion = extractField(block, "修改建議");
+    const description = extractField(block, "具體內容描述");
+
+    return {
+      id: `parsed-${index}-${title.slice(0, 12)}`,
+      title,
+      summary: analysis || description || "請參閱右側法律助理的完整分析。",
+      suggestion: suggestion || "",
+      severity: severityFromLabel(riskLabel),
+      section: typeLabel || riskLabel || `條款 ${index + 1}`,
+    };
+  });
+}
+
 const riskCards = computed<RiskCard[]>(() => {
-  const chunks = latestContractAssistant.value?.chunks ?? [];
-  if (chunks.length === 0) {
+  const msg = latestContractAssistant.value;
+  if (!msg) {
     return [
       {
         id: "placeholder",
         title: "等待分析結果",
         summary: "送出審閱問題後，系統會在這裡整理重點風險與關鍵條文。",
+        suggestion: "",
         severity: "low",
         section: "Waiting for analysis",
       },
     ];
   }
 
-  return chunks.slice(0, 4).map((chunk, index) => ({
-    id: `${index}-${chunk.tag || "issue"}`,
+  // Try to parse structured answer first
+  const parsed = parseAnswerToCards(msg.content);
+  if (parsed.length > 0) return parsed;
+
+  // Fallback: use raw chunks
+  const chunks = msg.chunks ?? [];
+  return chunks.slice(0, 5).map((chunk, index) => ({
+    id: `chunk-${index}-${chunk.tag || "issue"}`,
     title: chunk.tag || `風險項目 ${index + 1}`,
     summary: chunk.text || "系統尚未提供摘要內容。",
+    suggestion: "",
     severity: index === 0 ? "high" : index === 1 ? "medium" : "low",
     section: `Section ${index + 1}`,
   }));
@@ -179,10 +226,10 @@ const keyDates = computed(() => [
 ]);
 
 const quickActions = [
-  { label: "Suggest Revision", prompt: "請依據目前內容提出修約建議。" },
-  { label: "Check Compliance", prompt: "請檢查這份合約的法遵風險。" },
-  { label: "Summarize Risks", prompt: "請整理這份合約的主要風險。" },
-  { label: "Export Report", prompt: "請整理成可以輸出的風險摘要報告。" },
+  { label: "建議修改", prompt: "請依據目前內容提出修約建議。" },
+  { label: "法遵檢查", prompt: "請檢查這份合約的法遵風險。" },
+  { label: "風險摘要", prompt: "請整理這份合約的主要風險。" },
+  { label: "匯出報告", prompt: "請整理成可以輸出的風險摘要報告。" },
 ];
 
 function severityLabel(severity: RiskCard["severity"]): string {
@@ -211,7 +258,7 @@ function scrollAssistantFeedToBottom() {
   el.scrollTop = el.scrollHeight;
 }
 
-async function loadPreview(chatId: string | null | undefined) {
+async function loadPreview(chatId: string | null | undefined, specificSource?: string | null) {
   preview.value = null;
   previewLoading.value = true;
   currentPreviewPage.value = 0;
@@ -221,13 +268,23 @@ async function loadPreview(chatId: string | null | undefined) {
       ? entries.entries.map((row) => parseSourceRow(row as Record<string, unknown>))
       : [];
 
-    const firstSource = sourceRows.value[0];
-    if (!firstSource?.source) {
+    // Use the specifically requested source, or fall back to the first source of the conversation.
+    const targetSource = specificSource
+      ? (sourceRows.value.find((r) => r.source === specificSource) ?? null)
+      : (sourceRows.value[0] ?? null);
+
+    if (specificSource && !targetSource) {
+      // Source is globally indexed (no chatId) — preview it directly.
+      preview.value = await getSourcePreview(specificSource, null, { showLoading: false });
+      return;
+    }
+
+    if (!targetSource?.source) {
       preview.value = null;
       return;
     }
 
-    preview.value = await getSourcePreview(firstSource.source, firstSource.chat_id, {
+    preview.value = await getSourcePreview(targetSource.source, targetSource.chat_id, {
       showLoading: false,
     });
   } catch {
@@ -249,8 +306,8 @@ watch(
 );
 
 watch(
-  () => conversation.activeConversationId,
-  async (id) => {
+  () => [conversation.activeConversationId, route.query.source] as const,
+  async ([id, sourceParam]) => {
     scopeSyncState.value = "loading";
     const syncResult = await syncRagScopeFromSourcesForChat(id, { showLoading: false }).catch(() => null);
     if (!syncResult || !syncResult.ok) {
@@ -259,7 +316,8 @@ watch(
       scopeSyncState.value = syncResult.hasUploads ? "has" : "none";
     }
 
-    await loadPreview(id);
+    const specificSource = typeof sourceParam === "string" ? sourceParam : null;
+    await loadPreview(id, specificSource);
     stickToBottom.value = true;
     await nextTick();
     scrollAssistantFeedToBottom();
@@ -465,8 +523,12 @@ async function sendMessage() {
                   {{ severityLabel(card.severity) }}
                 </span>
               </div>
+              <p v-if="card.section" class="finding-card__section">{{ card.section }}</p>
               <p class="finding-card__body">{{ card.summary }}</p>
-              <p class="finding-card__section">{{ card.section }}</p>
+              <div v-if="card.suggestion" class="finding-card__suggestion">
+                <p class="finding-card__suggestion-label">AI 建議</p>
+                <p class="finding-card__suggestion-body">{{ card.suggestion }}</p>
+              </div>
             </article>
           </section>
 
@@ -518,12 +580,6 @@ async function sendMessage() {
             >
               {{ item.label }}
             </button>
-          </div>
-
-          <div class="assistant-focus">
-            <p class="assistant-focus__label">Focusing on</p>
-            <p class="assistant-focus__value">{{ riskCards[0]?.section ?? "Waiting for analysis" }}</p>
-            <p class="assistant-focus__hint">{{ riskCards[0]?.title ?? "尚未產生風險摘要" }}</p>
           </div>
 
           <div class="assistant-composer">
@@ -861,10 +917,35 @@ async function sendMessage() {
 }
 
 .finding-card__section {
-  margin: 12px 0 0;
-  font-size: 0.9rem;
+  margin: 6px 0 0;
+  font-size: 0.8rem;
   font-weight: 700;
   color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.finding-card__suggestion {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f0f7ff;
+  border-left: 3px solid #3b82f6;
+}
+
+.finding-card__suggestion-label {
+  margin: 0 0 4px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #2563eb;
+  letter-spacing: 0.04em;
+}
+
+.finding-card__suggestion-body {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: #1e3a5f;
 }
 
 .date-list {
