@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
@@ -30,14 +31,30 @@ def _is_timeout_exc(exc: BaseException) -> bool:
 
 
 def _route_and_answer_with_timeout(
+    cancel_event: threading.Event | None = None,
     **kwargs: Any,
 ) -> tuple[str, list[str], list[dict[str, Any]], str, dict[str, Any] | None]:
     timeout_sec = float(os.getenv("CHAT_ROUTE_TIMEOUT_SEC", "40").strip() or "40")
+    poll_interval = 0.5  # 每 0.5s 檢查一次 cancel_event
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(route_and_answer, **kwargs)
+    elapsed = 0.0
     try:
-        return future.result(timeout=timeout_sec)
-    except FuturesTimeoutError:
+        while elapsed < timeout_sec:
+            # 優先檢查是否被取消
+            if cancel_event is not None and cancel_event.is_set():
+                future.cancel()
+                logger.info("route_and_answer cancelled by cancel_event after %.1fs", elapsed)
+                return ("", [], [], "cancelled", {"cancelled": True})
+
+            wait = min(poll_interval, timeout_sec - elapsed)
+            try:
+                return future.result(timeout=wait)
+            except FuturesTimeoutError:
+                elapsed += wait
+                continue
+
+        # 整體逾時
         future.cancel()
         logger.warning("route_and_answer timed out after %.1fs (route-level)", timeout_sec)
         return (_TIMEOUT_MSG, [], [], "backend_timeout", {"timed_out": True, "timeout_sec": timeout_sec})
@@ -64,9 +81,11 @@ def answer_with_rag(
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
     chart_confirmation_reply: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]], str, dict[str, Any] | None]:
     """走總管 Agent，回傳 (answer, sources, chunks, tool_name, extra)。"""
     answer, sources, chunks, tool_name, extra = _route_and_answer_with_timeout(
+        cancel_event=cancel_event,
         question=question,
         top_k=top_k,
         history=history or [],
@@ -93,6 +112,7 @@ def answer_with_rag_and_log(
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
     chart_confirmation_reply: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, list[str], list[dict[str, Any]], str, dict[str, Any] | None]:
     """呼叫 answer_with_rag 並計時；若啟用 Eval 記錄則寫入一筆 log（與原 streamlit_app 行為一致）。"""
     t0 = time.perf_counter()
@@ -107,6 +127,7 @@ def answer_with_rag_and_log(
         clarification_reply=clarification_reply,
         chart_confirmation_question=chart_confirmation_question,
         chart_confirmation_reply=chart_confirmation_reply,
+        cancel_event=cancel_event,
     )
     latency = time.perf_counter() - t0
     if eval_log_enabled():
