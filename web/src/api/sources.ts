@@ -21,6 +21,21 @@ export async function getSources(
   return data;
 }
 
+export async function deleteSource(
+  source: string,
+  chatId?: string | null,
+  options?: { showLoading?: boolean },
+): Promise<void> {
+  const params =
+    chatId != null && chatId !== ""
+      ? { source, chat_id: chatId }
+      : { source };
+  await apiClient.delete("/api/v1/sources", {
+    params,
+    showLoading: options?.showLoading,
+  });
+}
+
 export async function getSourcePreview(
   source: string,
   chatId?: string | null,

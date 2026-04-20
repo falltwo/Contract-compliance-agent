@@ -62,3 +62,20 @@ def list_sources(chat_id: str | None = None) -> list[dict]:
     if chat_id is not None:
         entries = [e for e in entries if e.get("chat_id") == chat_id]
     return entries
+
+
+def delete_source_from_registry(source: str, chat_id: str | None = None) -> bool:
+    """從註冊表刪除指定 source（可選限定 chat_id）。回傳是否有實際刪除。"""
+    entries = load_registry()
+    before = len(entries)
+    entries = [
+        e for e in entries
+        if not (
+            e.get("source") == source
+            and (chat_id is None or e.get("chat_id") == chat_id)
+        )
+    ]
+    if len(entries) < before:
+        save_registry(entries)
+        return True
+    return False

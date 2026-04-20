@@ -404,6 +404,28 @@ def save_bm25_corpus(chunks: list[dict[str, Any]]) -> None:
         _atomic_write_json(path, out)
 
 
+def delete_source_from_bm25(source: str, chat_id: str | None = None) -> list[str]:
+    """從 BM25 語料中移除指定 source 的所有 chunks。
+    回傳被移除的 vector id 列表（供後續從 Pinecone 刪除）。"""
+    corpus = load_bm25_corpus()
+    removed_ids: list[str] = []
+    remaining: list[dict[str, Any]] = []
+    for c in corpus:
+        is_match = (
+            c.get("source") == source
+            and (chat_id is None or c.get("chat_id") == chat_id)
+        )
+        if is_match:
+            vid = str(c.get("id", ""))
+            if vid:
+                removed_ids.append(vid)
+        else:
+            remaining.append(c)
+    if removed_ids:
+        save_bm25_corpus(remaining)
+    return removed_ids
+
+
 def append_bm25_corpus(chunks: list[dict[str, Any]]) -> None:
     """將新 chunks 追加至 BM25 語料檔。並發安全：load→append→save 全部在 flock 內。"""
     with _BM25CorpusLock():

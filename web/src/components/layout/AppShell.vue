@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
 import { postIngestUpload } from "@/api/ingest";
-import { getSources } from "@/api/sources";
+import { deleteSource, getSources } from "@/api/sources";
 import { IS_ADMIN_TARGET } from "@/config/runtime";
 import { pushToast } from "@/state/toast";
 import { useConversationStore } from "@/stores/conversation";
@@ -27,6 +27,8 @@ const libraryQuery = ref("");
 const uploadDocs = ref<LibraryDoc[]>([]);
 const uploadInput = ref<HTMLInputElement | null>(null);
 const uploadBusy = ref(false);
+const deletingId = ref<string | null>(null);
+const confirmDeleteId = ref<string | null>(null);
 
 const isFrontWorkspace = computed(() => !IS_ADMIN_TARGET);
 
@@ -180,6 +182,48 @@ function openIndexedDoc(doc: LibraryDoc) {
   });
 }
 
+function requestDeleteConversation(event: Event, chatId: string) {
+  event.stopPropagation();
+  // 第一次點：進入確認狀態；第二次點：執行刪除
+  if (confirmDeleteId.value === chatId) {
+    confirmDeleteId.value = null;
+    conversation.deleteConversation(chatId);
+  } else {
+    confirmDeleteId.value = chatId;
+  }
+}
+
+function cancelConfirm(event: Event) {
+  event.stopPropagation();
+  confirmDeleteId.value = null;
+}
+
+async function requestDeleteIndexedDoc(event: Event, doc: LibraryDoc) {
+  event.stopPropagation();
+  if (deletingId.value) {
+    return;
+  }
+  // 第一次點：進入確認狀態；第二次點：執行刪除
+  if (confirmDeleteId.value === doc.id) {
+    confirmDeleteId.value = null;
+    deletingId.value = doc.id;
+    try {
+      await deleteSource(doc.source ?? doc.title, doc.chatId, { showLoading: false });
+      await loadLibrary();
+      pushToast({ variant: "info", message: `已從知識庫刪除「${doc.title}」。` });
+    } catch (error) {
+      pushToast({
+        variant: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      deletingId.value = null;
+    }
+  } else {
+    confirmDeleteId.value = doc.id;
+  }
+}
+
 async function loadLibrary() {
   try {
     const response = await getSources(null, { showLoading: false });
@@ -287,18 +331,37 @@ onMounted(() => {
             <h3>最近審閱</h3>
           </div>
           <div class="doc-group__list">
-            <button
+            <div
               v-for="doc in filteredRecentDocs"
               :key="doc.id"
-              type="button"
-              class="doc-node"
-              :class="{ 'doc-node--active': conversation.activeConversationId === doc.chatId && route.path === '/chat' }"
-              @click="openRecentConversation(doc.chatId || doc.id)"
+              class="doc-node-wrap"
+              :class="{ 'doc-node-wrap--confirm': confirmDeleteId === (doc.chatId || doc.id) }"
             >
-              <span class="doc-node__icon" aria-hidden="true"></span>
-              <span class="doc-node__title">{{ doc.title }}</span>
-              <span class="doc-node__dot" :class="`doc-node__dot--${latestRiskTone(doc.chatId)}`"></span>
-            </button>
+              <button
+                type="button"
+                class="doc-node"
+                :class="{ 'doc-node--active': conversation.activeConversationId === doc.chatId && route.path === '/chat' }"
+                @click="confirmDeleteId === (doc.chatId || doc.id) ? cancelConfirm($event) : openRecentConversation(doc.chatId || doc.id)"
+              >
+                <span class="doc-node__icon" aria-hidden="true"></span>
+                <span class="doc-node__title">{{ doc.title }}</span>
+                <span class="doc-node__dot" :class="`doc-node__dot--${latestRiskTone(doc.chatId)}`"></span>
+              </button>
+              <button
+                v-if="confirmDeleteId === (doc.chatId || doc.id)"
+                type="button"
+                class="doc-node__del doc-node__del--confirm"
+                title="確認刪除"
+                @click.stop="requestDeleteConversation($event, doc.chatId || doc.id)"
+              >確認</button>
+              <button
+                v-else
+                type="button"
+                class="doc-node__del"
+                title="刪除對話"
+                @click.stop="requestDeleteConversation($event, doc.chatId || doc.id)"
+              >✕</button>
+            </div>
             <p v-if="filteredRecentDocs.length === 0" class="doc-empty">尚無最近審閱紀錄。</p>
           </div>
         </section>
@@ -310,17 +373,39 @@ onMounted(() => {
             <span class="doc-group__count">{{ documentCount }}</span>
           </div>
           <div class="doc-group__list">
-            <button
+            <div
               v-for="doc in filteredIndexedDocs"
               :key="doc.id"
-              type="button"
-              class="doc-node"
-              @click="openIndexedDoc(doc)"
+              class="doc-node-wrap"
+              :class="{ 'doc-node-wrap--confirm': confirmDeleteId === doc.id }"
             >
-              <span class="doc-node__icon" aria-hidden="true"></span>
-              <span class="doc-node__title">{{ doc.title }}</span>
-              <span class="doc-node__dot" :class="`doc-node__dot--${latestRiskTone(doc.chatId)}`"></span>
-            </button>
+              <button
+                type="button"
+                class="doc-node"
+                :disabled="deletingId === doc.id"
+                @click="confirmDeleteId === doc.id ? cancelConfirm($event) : openIndexedDoc(doc)"
+              >
+                <span class="doc-node__icon" aria-hidden="true"></span>
+                <span class="doc-node__title">{{ deletingId === doc.id ? "刪除中…" : doc.title }}</span>
+                <span class="doc-node__dot" :class="`doc-node__dot--${latestRiskTone(doc.chatId)}`"></span>
+              </button>
+              <button
+                v-if="confirmDeleteId === doc.id"
+                type="button"
+                class="doc-node__del doc-node__del--confirm"
+                title="確認從知識庫刪除"
+                :disabled="deletingId === doc.id"
+                @click.stop="requestDeleteIndexedDoc($event, doc)"
+              >確認</button>
+              <button
+                v-else
+                type="button"
+                class="doc-node__del doc-node__del--danger"
+                title="從知識庫刪除文件"
+                :disabled="deletingId === doc.id"
+                @click.stop="requestDeleteIndexedDoc($event, doc)"
+              >🗑</button>
+            </div>
             <p v-if="filteredIndexedDocs.length === 0" class="doc-empty">找不到符合條件的文件。</p>
           </div>
         </section>
@@ -788,6 +873,91 @@ onMounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
+}
+
+/* ── 對話 / 文件列表 row wrapper（hover 顯示刪除鈕）── */
+.doc-node-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.doc-node-wrap .doc-node {
+  flex: 1;
+  min-width: 0;
+  /* 右側留空間給刪除鈕 */
+  padding-right: 32px;
+}
+
+.doc-node__del {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+  flex-shrink: 0;
+}
+
+.doc-node-wrap:hover .doc-node__del {
+  opacity: 1;
+}
+
+.doc-node__del:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.doc-node__del--danger:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.doc-node__del--confirm {
+  width: auto;
+  padding: 0 8px;
+  background: #dc2626;
+  color: #ffffff;
+  opacity: 1;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 6px;
+}
+
+.doc-node__del--confirm:hover {
+  background: #b91c1c;
+  color: #ffffff;
+}
+
+.doc-node-wrap--confirm .doc-node {
+  opacity: 0.55;
+}
+
+.doc-node__del:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* active 狀態時刪除鈕用淡色 */
+.doc-node-wrap:has(.doc-node--active) .doc-node__del {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.doc-node-wrap:has(.doc-node--active) .doc-node__del:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
 }
 
 .sr-only-upload {
