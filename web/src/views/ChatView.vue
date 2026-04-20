@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 
 import { ApiError } from "@/api/client";
 import { postChat } from "@/api/chat";
+import { postChatStream } from "@/api/chatStream";
 import { getSourcePreview, getSources, type SourcePreviewResponse } from "@/api/sources";
 import ChatAssistantMessage from "@/components/chat/ChatAssistantMessage.vue";
 import ChatRetrievalSettingsModal from "@/components/chat/ChatRetrievalSettingsModal.vue";
@@ -41,6 +42,7 @@ const route = useRoute();
 const input = ref("");
 const sending = ref(false);
 const chatError = ref<unknown>(null);
+const streamingStatus = ref<string | null>(null);
 const settingsOpen = ref(false);
 const scopeSyncState = ref<"loading" | "has" | "none" | "error">("loading");
 const railTab = ref<RailTab>("risk");
@@ -369,39 +371,65 @@ async function sendMessage() {
   input.value = "";
   sending.value = true;
   chatError.value = null;
+  streamingStatus.value = "正在分析問題類型...";
   railTab.value = "assistant";
 
+  const body: ChatRequest = {
+    message: raw,
+    history: priorHistory,
+    top_k: settings.topK,
+    strict: settings.strict,
+    chat_id: convId,
+    rag_scope_chat_id: settings.resolveRagScopeChatId(convId),
+    ...pendingPart,
+  };
+
+  // 插入空的 assistant placeholder，streaming 時逐步填入
+  conversation.appendStreamingPlaceholder(convId);
+  let hasReceivedTokens = false;
+
   try {
-    const body: ChatRequest = {
-      message: raw,
-      history: priorHistory,
-      top_k: settings.topK,
-      strict: settings.strict,
-      chat_id: convId,
-      rag_scope_chat_id: settings.resolveRagScopeChatId(convId),
-      ...pendingPart,
-    };
-    const res = await postChat(body, { showLoading: true });
-    conversation.appendAssistantFromResponse(convId, res);
-    conversation.applyChatResponseNextFields(res);
+    await postChatStream(body, {
+      onStatus(message) {
+        streamingStatus.value = message;
+      },
+      onToken(fragment) {
+        if (!hasReceivedTokens) {
+          hasReceivedTokens = true;
+          streamingStatus.value = null;
+        }
+        conversation.appendStreamingToken(convId, fragment);
+      },
+      onMeta(meta) {
+        conversation.finalizeStreamingMessage(convId, meta);
+        conversation.applyChatResponseNextFields(meta as any);
+      },
+      onDone() {
+        streamingStatus.value = null;
+      },
+      onError(message) {
+        streamingStatus.value = null;
+        // 如果還沒收到任何 token，移除 placeholder
+        if (!hasReceivedTokens) {
+          conversation.removeLastMessage(convId);
+        }
+        chatError.value = new Error(message);
+        pushToast({ variant: "error", message });
+      },
+    });
   } catch (error) {
-    conversation.removeLastMessage(convId);
-    chatError.value = error;
-    if (error instanceof ApiError) {
-      pushToast({
-        variant: "error",
-        code: error.code,
-        message: error.message,
-        details: error.details,
-      });
-    } else {
-      pushToast({
-        variant: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+    streamingStatus.value = null;
+    if (!hasReceivedTokens) {
+      conversation.removeLastMessage(convId);
     }
+    chatError.value = error;
+    pushToast({
+      variant: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
   } finally {
     sending.value = false;
+    streamingStatus.value = null;
   }
 }
 </script>
@@ -558,6 +586,14 @@ async function sendMessage() {
                   <ChatAssistantMessage :message="msg" />
                 </div>
               </template>
+
+              <!-- Streaming 狀態指示器 -->
+              <div v-if="streamingStatus" class="streaming-indicator">
+                <span class="streaming-dot" />
+                <span class="streaming-dot" />
+                <span class="streaming-dot" />
+                <span class="streaming-label">{{ streamingStatus }}</span>
+              </div>
             </div>
             <div v-else class="assistant-empty">
               送出審閱問題後，法律助理會在這裡整理條文重點、修約方向與引用來源。
@@ -1112,5 +1148,62 @@ async function sendMessage() {
   .assistant-actions {
     grid-template-columns: 1fr;
   }
+}
+
+/* --- Streaming 狀態指示器 --- */
+.streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 14px;
+  margin-top: 8px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%);
+  animation: streamFadeIn 0.3s ease-out;
+}
+
+@keyframes streamFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.streaming-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: streamPulse 1.2s ease-in-out infinite;
+}
+
+.streaming-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.streaming-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes streamPulse {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.streaming-label {
+  font-size: 0.82rem;
+  color: #6366f1;
+  font-weight: 600;
+  margin-left: 4px;
 }
 </style>

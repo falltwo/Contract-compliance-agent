@@ -113,6 +113,9 @@ def ingest_file_items(
                 "text": all_texts[j],
                 "source": all_sources[j],
                 "chunk_index": all_chunk_indexes[j],
+                # 綁定 embedding 版本，避免 EMBED_MODEL 變更後新舊向量混用造成相似度崩潰
+                "embed_model": str(embed_model or ""),
+                "embed_dim": int(index_dim or 0),
             }
             if chat_id is not None:
                 metadata["chat_id"] = chat_id

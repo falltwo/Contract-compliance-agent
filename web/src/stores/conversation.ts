@@ -195,6 +195,67 @@ export const useConversationStore = defineStore("conversation", {
       conv.updatedAt = Date.now();
       this._persist();
     },
+
+    /** Streaming: 先插入一個空的 assistant message placeholder */
+    appendStreamingPlaceholder(chatId: string) {
+      const conv = this.conversations[chatId];
+      if (!conv) {
+        return;
+      }
+      const msg: AssistantConversationMessage = {
+        role: "assistant",
+        content: "",
+        sources: [],
+        chunks: [],
+        tool_name: "",
+        extra: null,
+      };
+      conv.messages.push(msg);
+      conv.updatedAt = Date.now();
+      // 不 persist — streaming 中頻繁寫入太慢
+    },
+
+    /** Streaming: 將 token fragment 追加到最後一則 assistant message */
+    appendStreamingToken(chatId: string, fragment: string) {
+      const conv = this.conversations[chatId];
+      if (!conv || conv.messages.length === 0) {
+        return;
+      }
+      const last = conv.messages[conv.messages.length - 1];
+      if (last.role === "assistant") {
+        last.content += fragment;
+      }
+      // 不 persist — streaming 中頻繁寫入太慢
+    },
+
+    /** Streaming: stream 結束後填入 metadata 並 persist */
+    finalizeStreamingMessage(
+      chatId: string,
+      meta: {
+        sources?: string[];
+        chunks?: Array<{ tag?: string; text?: string }>;
+        tool_name?: string;
+        extra?: Record<string, unknown> | null;
+      },
+    ) {
+      const conv = this.conversations[chatId];
+      if (!conv || conv.messages.length === 0) {
+        return;
+      }
+      const last = conv.messages[conv.messages.length - 1];
+      if (last.role === "assistant") {
+        const msg = last as AssistantConversationMessage;
+        msg.sources = [...(meta.sources ?? [])];
+        msg.chunks = (meta.chunks ?? []).map((c) => ({
+          tag: c.tag ?? "",
+          text: c.text ?? "",
+        }));
+        msg.tool_name = meta.tool_name ?? "";
+        msg.extra = meta.extra ?? null;
+      }
+      conv.updatedAt = Date.now();
+      this._persist();
+    },
     applyChatResponseNextFields(
       response: Pick<
         ChatResponse,

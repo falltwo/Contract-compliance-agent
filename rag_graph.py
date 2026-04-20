@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import time
+import uuid
+from contextvars import ContextVar
 from difflib import SequenceMatcher
 from typing import Any, List, TypedDict, cast
 
@@ -46,10 +48,70 @@ class RAGState(_RAGStateRequired, total=False):
     """RAG 圖狀態。error 為選填，retrieve 失敗時寫入，generate 會直接回覆錯誤不呼叫 LLM。"""
     error: str
     chat_id: str  # 選填：檢索僅限該對話上傳的 chunks；亦作為 thread_id
+    llm_calls: int  # 呼叫次數計數，供 budget 判斷
+    degraded_steps: List[str]  # 中途降級的步驟（aux_queries_failed 等），用於可觀測性
 
 
 # 生成回答時只取最近 N 輪對話，避免過長歷史吃滿 context 並維持「記得上下文」效果
 MAX_HISTORY_TURNS = int(os.getenv("RAG_MAX_HISTORY_TURNS", "12"))
+
+# LLM 呼叫預算：單一 run_rag 整體上限，防止 prompt/aux 設定錯誤時成本失控
+DEFAULT_MAX_LLM_CALLS = 12
+
+
+class LLMBudgetExceeded(RuntimeError):
+    """LLM call budget exceeded for current RAG run."""
+
+
+# 每次 run_rag 共享的 LLM 呼叫計數；非 RAG 流程的直接呼叫（research/contract_risk）不受影響
+_llm_call_counter: ContextVar[list[int] | None] = ContextVar("_llm_call_counter", default=None)
+_llm_call_budget: ContextVar[int] = ContextVar("_llm_call_budget", default=0)
+
+
+def _reset_llm_budget(max_calls: int) -> None:
+    """run_rag 入口呼叫一次，重置計數與預算。"""
+    _llm_call_counter.set([0])
+    _llm_call_budget.set(max(1, int(max_calls)))
+
+
+def _bump_llm_call(stage: str) -> int:
+    """每次呼叫 LLM 前呼叫；超過預算則 raise LLMBudgetExceeded。回傳當前次數。"""
+    counter = _llm_call_counter.get()
+    if counter is None:
+        # 非 run_rag 入口（e.g. retrieve_only 或獨立呼叫）不強制預算
+        return 0
+    counter[0] += 1
+    budget = _llm_call_budget.get()
+    if budget and counter[0] > budget:
+        raise LLMBudgetExceeded(
+            f"LLM call budget exhausted at stage={stage} (calls={counter[0]}, budget={budget})"
+        )
+    return counter[0]
+
+
+def _get_llm_calls() -> int:
+    counter = _llm_call_counter.get()
+    return counter[0] if counter else 0
+
+
+def _get_max_llm_calls() -> int:
+    try:
+        value = int(os.getenv("RAG_MAX_LLM_CALLS", str(DEFAULT_MAX_LLM_CALLS)))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_LLM_CALLS
+    return max(1, value)
+
+
+def _note_degraded(state: dict[str, Any] | None, step: str) -> None:
+    """將中途降級的步驟記進 state，供 eval/log 可觀測性使用。容錯無 state 情境。"""
+    if state is None:
+        return
+    buf = state.get("degraded_steps")
+    if not isinstance(buf, list):
+        buf = []
+        state["degraded_steps"] = buf
+    if step not in buf:
+        buf.append(step)
 
 
 def _timeout_kwargs(client: Any, stage: str) -> dict[str, Any]:
@@ -120,6 +182,7 @@ def _generate_auxiliary_queries(
         return []
     prompt = f"主問句：{main_query.strip()}\n請輸出輔助檢索問句的 JSON 陣列："
     try:
+        _bump_llm_call("rag_aux_query")
         out = chat_client.models.generate_content(
             model=llm_model,
             contents=prompt,
@@ -293,6 +356,7 @@ def _rerank_with_llm(
         + "\n\n請根據與問題的相關性，輸出前 N 個候選的編號（1 開始），以逗號分隔："
     )
 
+    _bump_llm_call("rag_rerank")
     out = client.models.generate_content(
         model=llm_model,
         contents=prompt,
@@ -349,6 +413,7 @@ def _rewrite_query_for_retrieval(
         return (question or "").strip()
     prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題（請改寫成完整檢索問句）\n{question}"
     try:
+        _bump_llm_call("rag_rewrite")
         out = chat_client.models.generate_content(
             model=llm_model,
             contents=prompt,
@@ -551,6 +616,7 @@ def _build_graph():
         else:
             prompt = f"## 問題\n{question}\n\n## 檢索內容\n{context}"
         try:
+            _bump_llm_call("rag_package")
             out = chat_client.models.generate_content(
                 model=rag_package_model,
                 contents=prompt,
@@ -558,7 +624,12 @@ def _build_graph():
                 **_timeout_kwargs(chat_client, "rag_package"),
             )
             packaged_context = (out.text or "").strip() or context
+        except LLMBudgetExceeded:
+            _note_degraded(state, "package_budget_exceeded")
+            logger.warning("Investigator package skipped: LLM budget exhausted", exc_info=False)
+            packaged_context = context
         except Exception as e:
+            _note_degraded(state, "package_failed")
             logger.warning("Investigator package failed, pass through context: %s", e, exc_info=True)
             packaged_context = context
         logger.info("rag_graph node=package duration_sec=%.3f outcome=ok", time.perf_counter() - t0)
@@ -676,7 +747,9 @@ def run_rag(
     }
     if chat_id:
         state["chat_id"] = chat_id
-    config: RunnableConfig = {"configurable": {"thread_id": chat_id or "default"}}
+    # 沒帶 chat_id 時使用隨機 uuid 作為 thread_id，避免所有匿名請求共用 "default" thread 造成跨請求污染。
+    thread_id = chat_id if chat_id else f"anon-{uuid.uuid4().hex}"
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     result_raw = graph.invoke(cast(RAGState, state), config=config)
     result: RAGState = {
         "question": result_raw.get("question", question),
