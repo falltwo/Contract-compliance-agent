@@ -98,6 +98,9 @@ def ingest_chunks(
                 "text": chunk.text,
                 "source": chunk.source,
                 "chunk_index": chunk.chunk_index,
+                # 綁定 embedding 版本（model + dim），避免變更 EMBED_MODEL 後新舊向量混用
+                "embed_model": str(embed_model or ""),
+                "embed_dim": int(dim or 0),
             }
             if chat_id is not None:
                 metadata["chat_id"] = chat_id
