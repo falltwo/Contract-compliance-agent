@@ -144,13 +144,21 @@ function severityFromLabel(label: string): RiskCard["severity"] {
   return "low";
 }
 
+// 條號：阿拉伯數字 或 中文數字（一~百千萬）
+const ARTICLE_NUM = "[\\d一二三四五六七八九十百千萬]+";
+// 條首切割：第X條 後可接 ：: 或空白或換行
+const ARTICLE_SPLIT_RE = new RegExp(`(?=第\\s*${ARTICLE_NUM}\\s*條[\\s：:])`, "u");
+const ARTICLE_HEADER_RE = new RegExp(`第\\s*${ARTICLE_NUM}\\s*條[\\s：:]*([^\\n【]*)`, "u");
+
 function parseAnswerToCards(answer: string): RiskCard[] {
-  // Match each 第 X 條 block
-  const blocks = answer.split(/(?=第\s*\d+\s*條[：:])/).filter((b) => /第\s*\d+\s*條/.test(b));
+  const blocks = answer
+    .split(ARTICLE_SPLIT_RE)
+    .filter((b) => new RegExp(`第\\s*${ARTICLE_NUM}\\s*條`, "u").test(b)
+      && /【風險等級】|【法務實務推演】|【修改建議】/.test(b));
   if (blocks.length === 0) return [];
 
-  return blocks.slice(0, 5).map((block, index) => {
-    const titleMatch = block.match(/第\s*\d+\s*條[：:]\s*([^\n]+)/);
+  return blocks.slice(0, 8).map((block, index) => {
+    const titleMatch = block.match(ARTICLE_HEADER_RE);
     const title = titleMatch?.[1]?.trim() || `條款 ${index + 1}`;
     const typeLabel = extractField(block, "條款類型");
     const riskLabel = extractField(block, "風險等級");
@@ -188,20 +196,21 @@ const riskCards = computed<RiskCard[]>(() => {
   const parsed = parseAnswerToCards(msg.content);
   if (parsed.length > 0) return parsed;
 
-  // Fallback: use raw chunks
-  const chunks = msg.chunks ?? [];
-  return chunks.slice(0, 5).map((chunk, index) => ({
-    id: `chunk-${index}-${chunk.tag || "issue"}`,
-    title: chunk.tag || `風險項目 ${index + 1}`,
-    summary: chunk.text || "系統尚未提供摘要內容。",
-    suggestion: "",
-    severity: index === 0 ? "high" : index === 1 ? "medium" : "low",
-    section: `Section ${index + 1}`,
-  }));
+  // Fallback: show a single guidance card (never expose raw chunk text)
+  return [
+    {
+      id: "fallback-guidance",
+      title: "合約分析完成",
+      summary: "AI 已完成分析，詳細說明請參閱右側「法律助理」欄位的完整回應。",
+      suggestion: "",
+      severity: "low" as const,
+      section: "完整分析",
+    },
+  ];
 });
 
 const overallRiskScore = computed(() => {
-  const cards = riskCards.value.filter((item) => item.id !== "placeholder");
+  const cards = riskCards.value.filter((item) => item.id !== "placeholder" && item.id !== "fallback-guidance");
   if (cards.length === 0) {
     return 0;
   }
