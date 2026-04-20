@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -925,6 +926,14 @@ def route_and_answer(
         answer, sources, chunks = contract_risk_agent(
             question=question, top_k=top_k_expert, history=history, strict=strict, chat_id=rag_scope_chat_id
         )
+        # 從答案中萃取法條引用（如「民法第188條」），構建全國法規資料庫查詢連結加入 sources
+        _law_refs = _extract_law_refs_from_text(answer)
+        if _law_refs:
+            _law_urls = [
+                f"https://law.moj.gov.tw/LawClass/LawSearchAll.aspx?kw={urllib.parse.quote(_ref, safe='')}"
+                for _ref in _law_refs
+            ]
+            sources = list(sources) + _law_urls
         return answer, sources, chunks, "contract_risk_agent", None
 
     if tool == "contract_risk_with_law_search":
