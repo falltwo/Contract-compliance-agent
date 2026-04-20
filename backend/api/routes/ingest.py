@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -10,8 +11,10 @@ from backend.schemas.ingest import (
     SourcesListResponse,
 )
 from backend.services.ingest_adapter import run_ingest_upload
-from rag_common import load_bm25_corpus
-from sources_registry import list_sources
+from rag_common import delete_source_from_bm25, load_bm25_corpus
+from sources_registry import delete_source_from_registry, list_sources
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
 
@@ -50,6 +53,42 @@ def get_sources(
 ) -> SourcesListResponse:
     cid = (chat_id or "").strip() or None
     return SourcesListResponse(entries=list_sources(chat_id=cid))
+
+
+@router.delete("/sources")
+def delete_source(
+    source: Annotated[str, Query(description="完整 source 路徑（如 uploaded/<chat_id>/<filename>）")],
+    chat_id: Annotated[str | None, Query(description="對話 ID（選填）")] = None,
+) -> dict:
+    """從知識庫（BM25 語料 + Pinecone + 來源註冊表）刪除指定來源的所有向量。"""
+    normalized_source = source.strip()
+    if not normalized_source:
+        raise HTTPException(status_code=400, detail="source is required")
+
+    normalized_chat_id = (chat_id or "").strip() or None
+
+    # 1. 從 BM25 語料移除並取得對應的 vector ids
+    vector_ids = delete_source_from_bm25(normalized_source, normalized_chat_id)
+
+    # 2. 從 Pinecone 刪除（依 ID 批次刪除）
+    if vector_ids:
+        try:
+            from backend.rag_clients import get_cached_rag_stack
+            _, _, index, _, _, _, _ = get_cached_rag_stack()
+            batch_size = 1000
+            for i in range(0, len(vector_ids), batch_size):
+                index.delete(ids=vector_ids[i : i + batch_size])
+        except Exception as exc:
+            logger.warning("Pinecone delete failed for source=%s: %s", normalized_source, exc)
+
+    # 3. 從來源註冊表移除
+    delete_source_from_registry(normalized_source, normalized_chat_id)
+
+    return {
+        "deleted": True,
+        "source": normalized_source,
+        "vector_count": len(vector_ids),
+    }
 
 
 @router.get("/sources/preview", response_model=SourcePreviewResponse)
