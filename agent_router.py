@@ -15,6 +15,7 @@ from google.genai import types
 from company_tools import financial_metrics, generate_quarterly_plan, parse_dates_from_text
 from echarts_mcp_client import call_echarts_mcp, use_echarts_mcp
 from expert_agents import (
+    CONTRACT_RISK_STRICT_SYSTEM,
     contract_risk_agent,
     data_analyst_agent,
     esg_agent,
@@ -371,16 +372,15 @@ def _contract_risk_with_law_search_impl(
     if web_urls:
         combined_context += "\n\n## 本次查詢使用之外部連結（請在回答的「來源列表」中一併列出）\n" + "\n".join(f"- {u}" for u in web_urls)
 
+    # 使用與 contract_risk_agent 相同的結構化輸出格式（第X條 / 【風險等級】/ 【法務實務推演】/ 【修改建議】）
+    # 並補充法條查詢結果指引，確保 Risk Cards 解析器能正常運作
     system = (
-        "你是合約與法遵輔助審閱專家。請**嚴格根據**以下內容做風險評估：\n"
-        "1) **合約檢索內容**：來自使用者上傳的合約／文件。\n"
-        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋（若有）。\n\n"
-        "請依序產出：\n"
-        "**一、合約條款風險摘要**：條列本合約中對買方／我方可能不利的條款。\n"
-        "**二、相關法條重點**：節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋。\n"
-        "**三、風險提醒與建議**：綜合合約與法條，說明應注意的風險與可考慮的調整方向。\n"
-        "**四、本合約提及之法律字號清單**：列出檢索內容中出現的所有法律名稱與條號。\n\n"
-        "請勿在回答末尾另外條列來源或 chunk 編號，系統會自動顯示。回答中不需重複寫免責聲明，系統會自動於文末附加。"
+        CONTRACT_RISK_STRICT_SYSTEM
+        + "\n\n# 法條查詢補充\n"
+        "Context 中包含「查詢到的相關條文與實務見解」區塊（來自司法院網路搜尋）。\n"
+        "請在相關條款的【法務實務推演】與【修改建議】中，引用或參考這些外部法條資料以增加可信度，"
+        "並直接在文中寫出完整法條名稱（如民法第188條），系統將自動產生連結。\n"
+        "回答中不需重複寫免責聲明，系統會自動於文末附加。"
     )
     history_text = ""
     if history:
