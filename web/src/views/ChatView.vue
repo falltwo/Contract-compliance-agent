@@ -2,8 +2,6 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
-import { ApiError } from "@/api/client";
-import { postChat } from "@/api/chat";
 import { postChatStream } from "@/api/chatStream";
 import { getSourcePreview, getSources, type SourcePreviewResponse } from "@/api/sources";
 import ChatAssistantMessage from "@/components/chat/ChatAssistantMessage.vue";

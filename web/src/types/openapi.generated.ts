@@ -41,7 +41,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/ingest/upload": {
+    "/api/v1/chat/stream": {
         parameters: {
             query?: never;
             header?: never;
@@ -51,10 +51,94 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Post Ingest Upload
-         * @description 多部分表單：`files` 為檔案欄位（可重複），`chat_id` 為一般表單欄位。
-         *     行為對齊 Streamlit「灌入到向量庫」：同步完成後回傳 chunk 數與本次更新的來源列。
+         * Post Chat Stream
+         * @description SSE streaming chat endpoint — 與 /chat 相同邏輯但透過 SSE 逐步回傳。
          */
+        post: operations["post_chat_stream_api_v1_chat_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Services Status */
+        get: operations["get_services_status_api_v1_admin_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/services/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Restart Services */
+        post: operations["post_restart_services_api_v1_admin_services_restart_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/ollama/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Ollama Models */
+        get: operations["get_ollama_models_api_v1_admin_ollama_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/docker/containers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Docker Containers */
+        get: operations["get_docker_containers_api_v1_admin_docker_containers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ingest/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post Ingest Upload */
         post: operations["post_ingest_upload_api_v1_ingest_upload_post"];
         delete?: never;
         options?: never;
@@ -69,11 +153,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Sources
-         * @description 對齊 `sources_registry.list_sources`（側欄「是否有上傳」與來源列表）。
-         */
+        /** Get Sources */
         get: operations["get_sources_api_v1_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sources/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Source Preview */
+        get: operations["get_source_preview_api_v1_sources_preview_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -190,12 +288,12 @@ export interface components {
         Body_post_ingest_upload_api_v1_ingest_upload_post: {
             /**
              * Files
-             * @description 一或多個 .txt / .md / .pdf / .docx
+             * @description One or more .txt / .md / .pdf / .docx files
              */
             files: string[];
             /**
              * Chat Id
-             * @description 對話 id；與 Streamlit `active_conv_id` 一致，寫入 metadata
+             * @description Conversation id for metadata scoping
              */
             chat_id?: string | null;
         };
@@ -295,6 +393,28 @@ export interface components {
             text: string;
         } & {
             [key: string]: unknown;
+        };
+        /** DockerContainerInfo */
+        DockerContainerInfo: {
+            /** Container Id */
+            container_id: string;
+            /** Name */
+            name: string;
+            /** Image */
+            image: string;
+            /** Status */
+            status: string;
+            /** State */
+            state: string;
+        };
+        /** DockerContainersResponse */
+        DockerContainersResponse: {
+            /** Engine Available */
+            engine_available: boolean;
+            /** Containers */
+            containers?: components["schemas"]["DockerContainerInfo"][];
+            /** Error */
+            error?: string | null;
         };
         /**
          * EvalBatchDetailResponse
@@ -406,6 +526,7 @@ export interface components {
              * Status
              * @default ok
              * @example ok
+             * @example degraded
              */
             status: string;
             /**
@@ -415,14 +536,15 @@ export interface components {
             service: string;
             /**
              * Version
-             * @default 0.1.0
+             * @default 1.0.0
              */
             version: string;
+            /** Deps */
+            deps?: {
+                [key: string]: string;
+            };
         };
-        /**
-         * IngestUploadResponse
-         * @description 同步灌入完成回應（與 Streamlit 按鈕後等待結果一致）。
-         */
+        /** IngestUploadResponse */
         IngestUploadResponse: {
             /**
              * Mode
@@ -432,21 +554,81 @@ export interface components {
             mode: "sync";
             /**
              * Chunks Ingested
-             * @description 寫入 Pinecone 的 chunk 數
+             * @description Number of chunks ingested into Pinecone
              */
             chunks_ingested: number;
             /** Sources Updated */
             sources_updated?: components["schemas"]["SourceEntry"][];
-            /**
-             * Skipped Files
-             * @description 因副檔名／檔名不合法而略過的原始檔名（若有）
-             */
+            /** Skipped Files */
             skipped_files?: string[];
         };
-        /**
-         * SourceEntry
-         * @description 與 `sources_registry.update_registry_on_ingest` 寫入之一筆一致。
-         */
+        /** OllamaModelInfo */
+        OllamaModelInfo: {
+            /** Name */
+            name: string;
+            /** Model Id */
+            model_id: string;
+            /** Size */
+            size: string;
+            /** Modified */
+            modified: string;
+        };
+        /** OllamaModelsResponse */
+        OllamaModelsResponse: {
+            /** Models */
+            models?: components["schemas"]["OllamaModelInfo"][];
+            /** Error */
+            error?: string | null;
+        };
+        /** ServiceStatus */
+        ServiceStatus: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Active State
+             * @default unknown
+             */
+            active_state: string;
+            /**
+             * Sub State
+             * @default unknown
+             */
+            sub_state: string;
+            /**
+             * Unit File State
+             * @default unknown
+             */
+            unit_file_state: string;
+            /** Error */
+            error?: string | null;
+        };
+        /** ServicesRestartRequest */
+        ServicesRestartRequest: {
+            /**
+             * Services
+             * @description Service names to restart. Empty means default restart set.
+             */
+            services?: string[];
+        };
+        /** ServicesRestartResponse */
+        ServicesRestartResponse: {
+            /** Requested Services */
+            requested_services?: string[];
+            /** Restarted Services */
+            restarted_services?: string[];
+            /** Failed Services */
+            failed_services?: string[];
+            /** Services */
+            services?: components["schemas"]["ServiceStatus"][];
+        };
+        /** ServicesStatusResponse */
+        ServicesStatusResponse: {
+            /** Services */
+            services?: components["schemas"]["ServiceStatus"][];
+        };
+        /** SourceEntry */
         SourceEntry: {
             /** Source */
             source: string;
@@ -454,6 +636,22 @@ export interface components {
             chunk_count: number;
             /** Chat Id */
             chat_id?: string | null;
+        };
+        /** SourcePreviewResponse */
+        SourcePreviewResponse: {
+            /** Source */
+            source: string;
+            /** Chat Id */
+            chat_id?: string | null;
+            /** Title */
+            title: string;
+            /** Content */
+            content: string;
+            /**
+             * Chunk Count
+             * @default 0
+             */
+            chunk_count: number;
         };
         /** SourcesListResponse */
         SourcesListResponse: {
@@ -550,6 +748,132 @@ export interface operations {
             };
         };
     };
+    post_chat_stream_api_v1_chat_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_services_status_api_v1_admin_services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesStatusResponse"];
+                };
+            };
+        };
+    };
+    post_restart_services_api_v1_admin_services_restart_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicesRestartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesRestartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_ollama_models_api_v1_admin_ollama_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OllamaModelsResponse"];
+                };
+            };
+        };
+    };
+    get_docker_containers_api_v1_admin_docker_containers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DockerContainersResponse"];
+                };
+            };
+        };
+    };
     post_ingest_upload_api_v1_ingest_upload_post: {
         parameters: {
             query?: never;
@@ -601,6 +925,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SourcesListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_source_preview_api_v1_sources_preview_get: {
+        parameters: {
+            query: {
+                /** @description Exact source id, such as uploaded/<chat_id>/<filename> */
+                source: string;
+                /** @description Optional conversation scope */
+                chat_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcePreviewResponse"];
                 };
             };
             /** @description Validation Error */

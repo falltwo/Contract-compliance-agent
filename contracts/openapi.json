@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "agent-demo API",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "paths": {
     "/health": {
@@ -68,13 +68,176 @@
         }
       }
     },
+    "/api/v1/chat/stream": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Post Chat Stream",
+        "description": "SSE streaming chat endpoint — 與 /chat 相同邏輯但透過 SSE 逐步回傳。",
+        "operationId": "post_chat_stream_api_v1_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/services": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Services Status",
+        "operationId": "get_services_status_api_v1_admin_services_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesStatusResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/services/restart": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Post Restart Services",
+        "operationId": "post_restart_services_api_v1_admin_services_restart_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServicesRestartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServicesRestartResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/ollama/models": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Ollama Models",
+        "operationId": "get_ollama_models_api_v1_admin_ollama_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaModelsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/docker/containers": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Get Docker Containers",
+        "operationId": "get_docker_containers_api_v1_admin_docker_containers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockerContainersResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/ingest/upload": {
       "post": {
         "tags": [
           "ingest"
         ],
         "summary": "Post Ingest Upload",
-        "description": "多部分表單：`files` 為檔案欄位（可重複），`chat_id` 為一般表單欄位。\n行為對齊 Streamlit「灌入到向量庫」：同步完成後回傳 chunk 數與本次更新的來源列。",
         "operationId": "post_ingest_upload_api_v1_ingest_upload_post",
         "requestBody": {
           "content": {
@@ -116,7 +279,6 @@
           "ingest"
         ],
         "summary": "Get Sources",
-        "description": "對齊 `sources_registry.list_sources`（側欄「是否有上傳」與來源列表）。",
         "operationId": "get_sources_api_v1_sources_get",
         "parameters": [
           {
@@ -143,6 +305,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SourcesListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sources/preview": {
+      "get": {
+        "tags": [
+          "ingest"
+        ],
+        "summary": "Get Source Preview",
+        "operationId": "get_source_preview_api_v1_sources_preview_get",
+        "parameters": [
+          {
+            "name": "source",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Exact source id, such as uploaded/<chat_id>/<filename>",
+              "title": "Source"
+            },
+            "description": "Exact source id, such as uploaded/<chat_id>/<filename>"
+          },
+          {
+            "name": "chat_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional conversation scope",
+              "title": "Chat Id"
+            },
+            "description": "Optional conversation scope"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourcePreviewResponse"
                 }
               }
             }
@@ -325,7 +549,7 @@
             },
             "type": "array",
             "title": "Files",
-            "description": "一或多個 .txt / .md / .pdf / .docx"
+            "description": "One or more .txt / .md / .pdf / .docx files"
           },
           "chat_id": {
             "anyOf": [
@@ -337,7 +561,7 @@
               }
             ],
             "title": "Chat Id",
-            "description": "對話 id；與 Streamlit `active_conv_id` 一致，寫入 metadata"
+            "description": "Conversation id for metadata scoping"
           }
         },
         "type": "object",
@@ -565,6 +789,70 @@
         "title": "ChunkItem",
         "description": "檢索片段；與 rag 流程 `chunks` 一致，允許額外欄位。"
       },
+      "DockerContainerInfo": {
+        "properties": {
+          "container_id": {
+            "type": "string",
+            "title": "Container Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "container_id",
+          "name",
+          "image",
+          "status",
+          "state"
+        ],
+        "title": "DockerContainerInfo"
+      },
+      "DockerContainersResponse": {
+        "properties": {
+          "engine_available": {
+            "type": "boolean",
+            "title": "Engine Available"
+          },
+          "containers": {
+            "items": {
+              "$ref": "#/components/schemas/DockerContainerInfo"
+            },
+            "type": "array",
+            "title": "Containers"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "engine_available"
+        ],
+        "title": "DockerContainersResponse"
+      },
       "EvalBatchDetailResponse": {
         "properties": {
           "run_id": {
@@ -743,7 +1031,8 @@
             "title": "Status",
             "default": "ok",
             "examples": [
-              "ok"
+              "ok",
+              "degraded"
             ]
           },
           "service": {
@@ -754,7 +1043,14 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.1.0"
+            "default": "1.0.0"
+          },
+          "deps": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Deps"
           }
         },
         "type": "object",
@@ -771,7 +1067,7 @@
           "chunks_ingested": {
             "type": "integer",
             "title": "Chunks Ingested",
-            "description": "寫入 Pinecone 的 chunk 數"
+            "description": "Number of chunks ingested into Pinecone"
           },
           "sources_updated": {
             "items": {
@@ -785,16 +1081,177 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Skipped Files",
-            "description": "因副檔名／檔名不合法而略過的原始檔名（若有）"
+            "title": "Skipped Files"
           }
         },
         "type": "object",
         "required": [
           "chunks_ingested"
         ],
-        "title": "IngestUploadResponse",
-        "description": "同步灌入完成回應（與 Streamlit 按鈕後等待結果一致）。"
+        "title": "IngestUploadResponse"
+      },
+      "OllamaModelInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id"
+          },
+          "size": {
+            "type": "string",
+            "title": "Size"
+          },
+          "modified": {
+            "type": "string",
+            "title": "Modified"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "model_id",
+          "size",
+          "modified"
+        ],
+        "title": "OllamaModelInfo"
+      },
+      "OllamaModelsResponse": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/OllamaModelInfo"
+            },
+            "type": "array",
+            "title": "Models"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "OllamaModelsResponse"
+      },
+      "ServiceStatus": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "active_state": {
+            "type": "string",
+            "title": "Active State",
+            "default": "unknown"
+          },
+          "sub_state": {
+            "type": "string",
+            "title": "Sub State",
+            "default": "unknown"
+          },
+          "unit_file_state": {
+            "type": "string",
+            "title": "Unit File State",
+            "default": "unknown"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ServiceStatus"
+      },
+      "ServicesRestartRequest": {
+        "properties": {
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Services",
+            "description": "Service names to restart. Empty means default restart set."
+          }
+        },
+        "type": "object",
+        "title": "ServicesRestartRequest"
+      },
+      "ServicesRestartResponse": {
+        "properties": {
+          "requested_services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Requested Services"
+          },
+          "restarted_services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Restarted Services"
+          },
+          "failed_services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Services"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceStatus"
+            },
+            "type": "array",
+            "title": "Services"
+          }
+        },
+        "type": "object",
+        "title": "ServicesRestartResponse"
+      },
+      "ServicesStatusResponse": {
+        "properties": {
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceStatus"
+            },
+            "type": "array",
+            "title": "Services"
+          }
+        },
+        "type": "object",
+        "title": "ServicesStatusResponse"
       },
       "SourceEntry": {
         "properties": {
@@ -823,8 +1280,46 @@
           "source",
           "chunk_count"
         ],
-        "title": "SourceEntry",
-        "description": "與 `sources_registry.update_registry_on_ingest` 寫入之一筆一致。"
+        "title": "SourceEntry"
+      },
+      "SourcePreviewResponse": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "chat_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "title",
+          "content"
+        ],
+        "title": "SourcePreviewResponse"
       },
       "SourcesListResponse": {
         "properties": {
@@ -898,6 +1393,12 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

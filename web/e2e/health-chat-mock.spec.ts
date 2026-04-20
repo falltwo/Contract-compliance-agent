@@ -9,21 +9,19 @@ test.describe("health + chat mock E2E", () => {
     expect(["ok", "degraded"]).toContain(body.status);
   });
 
-  test("chat page renders mock POST /api/v1/chat response", async ({ page }) => {
-    await page.route("**/api/v1/chat", async (route) => {
+  test("chat page renders mock POST /api/v1/chat/stream SSE response", async ({ page }) => {
+    // Mock the SSE streaming endpoint used by the frontend
+    await page.route("**/api/v1/chat/stream", async (route) => {
+      const sseBody = [
+        'event: status\ndata: {"stage": "routing", "message": "正在分析問題類型..."}\n\n',
+        'event: token\ndata: {"t": "mock answer visible"}\n\n',
+        'event: meta\ndata: {"sources": [], "chunks": [], "tool_name": "rag_search", "extra": null, "latency_sec": 0.01, "next_original_question_for_clarification": null, "next_chart_confirmation_question": null}\n\n',
+        'event: done\ndata: {}\n\n',
+      ].join("");
       await route.fulfill({
         status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          answer: "mock answer visible",
-          sources: [],
-          chunks: [],
-          tool_name: "rag_search",
-          extra: null,
-          latency_sec: 0.01,
-          next_original_question_for_clarification: null,
-          next_chart_confirmation_question: null,
-        }),
+        contentType: "text/event-stream",
+        body: sseBody,
       });
     });
 
