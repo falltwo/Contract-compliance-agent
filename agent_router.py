@@ -165,15 +165,14 @@ def contract_risk_with_law_intent(question: str) -> Tuple[str, Dict[str, Any]] |
 
 
 def contract_risk_agent_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """合約／採購審閱類問句但未命中「含法條查詢」時，保證走 contract_risk_agent（僅知識庫），減少路由歧義。"""
+    """合約／採購審閱類問句，一律走含法條查詢流程以自動附上司法院連結。"""
     if not question or not question.strip():
         return None
     q = question.strip()
-    # 合約／契約／採購／標案／租賃 ＋ 審閱／分析／檢查／評估／看看／幫我看／條款／有什麼／哪些／風險
     contract_terms = ("合約", "契約", "契約書", "採購", "租賃契約", "租賃", "標案")
     action_terms = ("審閱", "分析", "檢查", "評估", "看看", "幫我看", "條款", "有什麼", "有哪些", "風險", "不利")
     if any(t in q for t in contract_terms) and any(k in q for k in action_terms):
-        return ("contract_risk_agent", {})
+        return ("contract_risk_with_law_search", {})
     return None
 
 
@@ -342,9 +341,14 @@ def _contract_risk_with_law_search_impl(
         if block and "無法使用網路搜尋" not in block:
             law_sections.append(f"### {ref}\n{block}")
             web_urls.extend(urls)
-    # 若合約中未抽出具體法條字號，仍用「成屋買賣／定型化契約＋民法／消保法」做後備查詢，讓外部連結有機會出現
+    # 若合約中未抽出具體法條字號，依問題內容動態產生後備查詢，讓外部連結有機會出現
     if not law_refs and not web_urls:
-        for fallback_query in ("成屋買賣 民法 定型化契約 site:judicial.gov.tw", "成屋買賣 消費者保護法 site:judicial.gov.tw"):
+        q_short = question.strip()[:40]
+        fallback_queries = [
+            f"{q_short} 相關法律條文 site:judicial.gov.tw",
+            f"{q_short} 民法 契約 site:judicial.gov.tw",
+        ]
+        for fallback_query in fallback_queries:
             block, urls = _web_search_with_urls(fallback_query, max_results=3)
             if block and "無法使用網路搜尋" not in block:
                 law_sections.append(f"### 相關法規與實務\n{block}")
