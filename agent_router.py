@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -275,7 +276,7 @@ def _extract_law_refs_from_text(text: str) -> List[str]:
             continue
         seen.add(key)
         out.append(f"{name}第{num}條")
-    return out[:15]  # 最多查 15 條，避免過多 API 呼叫
+    return out[:4]  # 最多查 4 條，控制延遲
 
 
 def _web_search_with_urls(query: str, max_results: int = 5) -> Tuple[str, List[str]]:
@@ -335,54 +336,51 @@ def _contract_risk_with_law_search_impl(
     law_refs = _extract_law_refs_from_text(context_rag)
     law_sections: List[str] = []
     web_urls: List[str] = []
-    for ref in law_refs:
-        q = f"{ref} site:judicial.gov.tw"
-        block, urls = _web_search_with_urls(q, max_results=4)
-        if block and "無法使用網路搜尋" not in block:
-            law_sections.append(f"### {ref}\n{block}")
-            web_urls.extend(urls)
-    # 若合約中未抽出具體法條字號，依問題內容動態產生後備查詢，讓外部連結有機會出現
-    if not law_refs and not web_urls:
-        q_short = question.strip()[:40]
-        fallback_queries = [
-            f"{q_short} 相關法律條文 site:judicial.gov.tw",
-            f"{q_short} 民法 契約 site:judicial.gov.tw",
-        ]
-        for fallback_query in fallback_queries:
-            block, urls = _web_search_with_urls(fallback_query, max_results=3)
-            if block and "無法使用網路搜尋" not in block:
-                law_sections.append(f"### 相關法規與實務\n{block}")
-                web_urls.extend(urls)
-            if len(law_sections) >= 2:
-                break
 
-    # 使用爬蟲（Firecrawl）擷取法條頁面，與合約引用對比以增加可信度
-    crawl_law_text, crawl_urls = _crawl_law_for_comparison(law_refs)
-    if crawl_urls:
-        web_urls.extend(crawl_urls)
+    # 並行查詢各法條，避免循序等待
+    def _search_one(ref: str) -> Tuple[str, str, List[str]]:
+        q = f"{ref} site:judicial.gov.tw"
+        block, urls = _web_search_with_urls(q, max_results=3)
+        return ref, block, urls
+
+    queries_to_run: List[str] = list(law_refs) if law_refs else []
+    if not queries_to_run:
+        # 合約未明確引用法條，依問題動態產生一條後備查詢
+        q_short = question.strip()[:40]
+        queries_to_run = [f"{q_short} 相關法律條文 site:judicial.gov.tw"]
+
+    with ThreadPoolExecutor(max_workers=min(len(queries_to_run), 4)) as pool:
+        futures = {pool.submit(_search_one, q): q for q in queries_to_run}
+        for fut in as_completed(futures):
+            try:
+                ref, block, urls = fut.result()
+                if block and "無法使用網路搜尋" not in block:
+                    label = ref if ref in law_refs else "相關法規與實務"
+                    law_sections.append(f"### {label}\n{block}")
+                    web_urls.extend(urls)
+            except Exception as exc:
+                logger.warning("law search failed: %s", exc)
+
+    crawl_law_text = ""  # Firecrawl 爬蟲已停用（速度考量）
 
     combined_context = "## 合約檢索內容（知識庫）\n\n" + context_rag
     if law_sections:
         combined_context += "\n\n## 查詢到的相關條文與實務見解（司法院／網路）\n\n" + "\n\n".join(law_sections)
     else:
-        combined_context += "\n\n## 查詢到的相關條文\n（未設定 TAVILY_API_KEY 或未找到對應條文，僅依合約內容評估。）"
-    if crawl_law_text:
-        combined_context += "\n\n## 爬蟲擷取之法條對比（供可信度對照）\n\n以下為以法條字號搜尋並擷取之條文內容，請與合約引用對照說明是否一致。\n\n" + crawl_law_text
+        combined_context += "\n\n## 查詢到的相關條文\n（未找到對應條文，僅依合約內容評估。）"
     if web_urls:
         combined_context += "\n\n## 本次查詢使用之外部連結（請在回答的「來源列表」中一併列出）\n" + "\n".join(f"- {u}" for u in web_urls)
 
     system = (
         "你是合約與法遵輔助審閱專家。請**嚴格根據**以下內容做風險評估：\n"
         "1) **合約檢索內容**：來自使用者上傳的合約／文件。\n"
-        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋。\n"
-        "3) 若有 **爬蟲擷取之法條對比**：請在「相關法條重點」或獨立小節簡要說明合約引用之法條與擷取條文是否一致，以增加可信度。\n\n"
+        "2) **查詢到的相關條文與實務見解**：來自司法院法學資料檢索等外部搜尋（若有）。\n\n"
         "請依序產出：\n"
-        "**一、合約條款風險摘要**：條列本合約中對買方／我方可能不利的條款，並註明對應的合約來源（如 [chunkX]）。\n"
-        "**二、相關法條重點**：對照上面「查詢到的相關條文」與「爬蟲擷取之法條對比」（若有）節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋；若有法條對比，請說明與合約引用是否一致。\n"
-        "**三、風險提醒與建議**：綜合合約與法條，說明應注意的風險與可考慮的調整方向（勿自行推算具體金額）。\n"
+        "**一、合約條款風險摘要**：條列本合約中對買方／我方可能不利的條款。\n"
+        "**二、相關法條重點**：節錄與本合約有關的法條內容或實務見解，並註明來自網路搜尋。\n"
+        "**三、風險提醒與建議**：綜合合約與法條，說明應注意的風險與可考慮的調整方向。\n"
         "**四、本合約提及之法律字號清單**：列出檢索內容中出現的所有法律名稱與條號。\n\n"
-        "**五、來源列表**：必須分兩部分寫清楚：(1) 合約來源（列出上述用到的 PDF chunk，如 uploaded/.../xxx.pdf#chunk0）；(2) 外部連結（逐條列出「本次查詢使用之外部連結」區塊中的 URL，不可省略）。\n\n"
-        "回答中不需重複寫免責聲明，系統會自動於文末附加。"
+        "請勿在回答末尾另外條列來源或 chunk 編號，系統會自動顯示。回答中不需重複寫免責聲明，系統會自動於文末附加。"
     )
     history_text = ""
     if history:
