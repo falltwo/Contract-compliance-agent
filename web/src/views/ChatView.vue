@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { useRoute } from "vue-router";
+import { marked } from "marked";
 
 import { postChatStream } from "@/api/chatStream";
 import { getSourcePreview, getSources, type SourcePreviewResponse } from "@/api/sources";
@@ -125,6 +126,12 @@ const canGoToPreviousPreviewPage = computed(() => currentPreviewPage.value > 0);
 const canGoToNextPreviewPage = computed(
   () => currentPreviewPage.value < previewPages.value.length - 1,
 );
+
+marked.use({ breaks: true });
+
+function mdToHtml(src: string): string {
+  return marked(src || "", { async: false }) as string;
+}
 
 function extractField(block: string, label: string): string {
   const re = new RegExp(`【${label}】([\\s\\S]*?)(?=【|$)`);
@@ -568,10 +575,10 @@ async function sendMessage() {
                 </span>
               </div>
               <p v-if="card.section" class="finding-card__section">{{ card.section }}</p>
-              <p class="finding-card__body">{{ card.summary }}</p>
+              <div class="finding-card__body markdown-body" v-html="mdToHtml(card.summary)" />
               <div v-if="card.suggestion" class="finding-card__suggestion">
                 <p class="finding-card__suggestion-label">AI 建議</p>
-                <p class="finding-card__suggestion-body">{{ card.suggestion }}</p>
+                <div class="finding-card__suggestion-body markdown-body" v-html="mdToHtml(card.suggestion)" />
               </div>
             </article>
           </section>
@@ -976,6 +983,30 @@ async function sendMessage() {
   font-size: 0.95rem;
   line-height: 1.65;
   color: #52657d;
+}
+
+.finding-card__body :deep(p),
+.finding-card__suggestion-body :deep(p) {
+  margin: 0 0 0.4em;
+}
+
+.finding-card__body :deep(p:last-child),
+.finding-card__suggestion-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.finding-card__body :deep(ul),
+.finding-card__body :deep(ol),
+.finding-card__suggestion-body :deep(ul),
+.finding-card__suggestion-body :deep(ol) {
+  margin: 0.3em 0;
+  padding-left: 1.2em;
+}
+
+.finding-card__body :deep(strong),
+.finding-card__suggestion-body :deep(strong) {
+  font-weight: 700;
+  color: inherit;
 }
 
 .finding-card__section {
