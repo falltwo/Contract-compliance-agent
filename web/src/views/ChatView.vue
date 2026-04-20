@@ -598,7 +598,7 @@ async function sendMessage() {
             <div v-if="activeConversation?.messages.length" class="assistant-feed__messages">
               <template v-for="(msg, index) in activeConversation?.messages" :key="index">
                 <div v-if="msg.role === 'user'" class="assistant-user">{{ msg.content }}</div>
-                <div v-else-if="isAssistantMessage(msg)" class="assistant-reply">
+                <div v-else-if="isAssistantMessage(msg) && msg.content" class="assistant-reply">
                   <ChatAssistantMessage :message="msg" />
                 </div>
               </template>

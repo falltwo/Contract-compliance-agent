@@ -28,7 +28,7 @@ function mdToHtml(src: string): string {
 
 const split = computed(() => splitAnswerAndRefs(props.message.content));
 
-const mainHtml = computed(() => mdToHtml(split.value.main || "(空)"));
+const mainHtml = computed(() => mdToHtml(split.value.main || ""));
 
 const refsHtml = computed(() =>
   split.value.refs ? mdToHtml(split.value.refs) : "",
@@ -181,7 +181,7 @@ function onDetailToggle(e: Event, key: keyof typeof detailOpen) {
         <div
           v-if="seg.kind === 'md'"
           class="markdown-body bubble-part"
-          v-html="mdToHtml(seg.text || '(空)')"
+          v-html="mdToHtml(seg.text || '')"
         />
         <div
           v-else
