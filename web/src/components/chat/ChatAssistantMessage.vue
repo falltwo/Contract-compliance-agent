@@ -303,7 +303,16 @@ function onDetailToggle(e: Event, key: keyof typeof detailOpen) {
     >
       <summary :aria-expanded="detailOpen.sources">查看引用出處（檔名／連結）</summary>
       <ul class="sources-list">
-        <li v-for="(s, i) in message.sources" :key="i">{{ s }}</li>
+        <li v-for="(s, i) in message.sources" :key="i">
+          <a
+            v-if="s.startsWith('http')"
+            :href="s"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="source-link"
+          >{{ s }}</a>
+          <span v-else>{{ s }}</span>
+        </li>
       </ul>
     </details>
 
@@ -490,6 +499,17 @@ function onDetailToggle(e: Event, key: keyof typeof detailOpen) {
   padding-left: var(--space-4);
   font-size: var(--text-body-sm-size);
   color: var(--color-text-secondary);
+}
+
+.source-link {
+  color: var(--color-accent);
+  word-break: break-all;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.source-link:hover {
+  color: var(--color-text-primary);
 }
 
 .risk-note {
