@@ -212,29 +212,21 @@ const riskCards = computed<RiskCard[]>(() => {
 
 const overallRiskScore = computed(() => {
   const cards = riskCards.value.filter((item) => item.id !== "placeholder" && item.id !== "fallback-guidance");
-  if (cards.length === 0) {
-    return 0;
-  }
-  const total = cards.reduce((sum, card) => {
-    if (card.severity === "high") {
-      return sum + 84;
-    }
-    if (card.severity === "medium") {
-      return sum + 61;
-    }
-    return sum + 34;
-  }, 0);
-  return Math.round(total / cards.length);
+  if (cards.length === 0) return 0;
+  const high = cards.filter((c) => c.severity === "high").length;
+  const medium = cards.filter((c) => c.severity === "medium").length;
+  const low = cards.filter((c) => c.severity === "low").length;
+  // Weighted risk index: high=3pts, medium=1.5pts, low=0.5pts
+  // Normalised to 0–100 relative to all cards being high risk
+  const raw = high * 3 + medium * 1.5 + low * 0.5;
+  const max = cards.length * 3;
+  return Math.round((raw / max) * 100);
 });
 
 const complianceLabel = computed(() => {
-  if (overallRiskScore.value >= 75) {
-    return "High";
-  }
-  if (overallRiskScore.value >= 45) {
-    return "Medium";
-  }
-  return "Low";
+  if (overallRiskScore.value >= 70) return "危險";
+  if (overallRiskScore.value >= 40) return "注意";
+  return "安全";
 });
 
 const keyDates = computed(() => [
@@ -591,10 +583,10 @@ async function sendMessage() {
 
         <div v-if="railTab === 'risk'" class="rail-panel">
           <section class="score-card">
-            <p class="score-card__label">COMPLIANCE SCORE</p>
+            <p class="score-card__label">風險指數</p>
             <div class="score-card__row">
               <p class="score-card__value">{{ overallRiskScore }}<span>/100</span></p>
-              <span class="score-chip" :class="`score-chip--${complianceLabel.toLowerCase()}`">
+              <span class="score-chip" :class="`score-chip--${complianceLabel}`">
                 {{ complianceLabel }}
               </span>
             </div>
@@ -994,18 +986,21 @@ async function sendMessage() {
 }
 
 .score-chip--high,
+.score-chip--危險,
 .finding-chip--high {
   background: #fde8e8;
   color: #d64545;
 }
 
 .score-chip--medium,
+.score-chip--注意,
 .finding-chip--medium {
   background: #fff3d6;
   color: #b7791f;
 }
 
 .score-chip--low,
+.score-chip--安全,
 .finding-chip--low {
   background: #e8f8ee;
   color: #2f9e5f;
