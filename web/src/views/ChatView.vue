@@ -503,7 +503,7 @@ async function sendMessage() {
               class="viewer-icon viewer-icon--wide"
               aria-label="下載"
               :disabled="!preview?.source"
-              @click="preview?.source && downloadSource(preview.source).catch(e => pushToast({ type: 'error', message: e.message }))"
+              @click="preview?.source && downloadSource(preview.source).catch(e => pushToast({ variant: 'error', message: e.message }))"
             >Save</button>
           </div>
         </header>
