@@ -36,14 +36,25 @@ export async function deleteSource(
   });
 }
 
-export function downloadSource(source: string): void {
+export async function downloadSource(source: string): Promise<void> {
   const url = `/api/v1/sources/download?source=${encodeURIComponent(source)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("原始檔案不存在，請重新上傳後再下載。");
+    }
+    throw new Error(`下載失敗（${res.status}）`);
+  }
+  const blob = await res.blob();
+  const filename = decodeURIComponent(source.split("/").pop() ?? "download");
+  const objectUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = "";
+  a.href = objectUrl;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
 }
 
 export async function getSourcePreview(
