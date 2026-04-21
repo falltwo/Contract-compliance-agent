@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from difflib import SequenceMatcher
 from typing import Any, List, TypedDict, cast
@@ -382,6 +383,44 @@ def _rerank_with_llm(
     return [matches[i - 1] for i in order]
 
 
+def _select_rerank_method() -> str:
+    """決定 rerank 方式：mmr（預設，免費且快）/ llm（品質優先，多一次 LLM 調用）/ none。
+
+    相容行為：若只設定 `RAG_MMR_LAMBDA` 而未設定 `RAG_RERANK_METHOD`，仍使用 MMR。
+    設定 `RAG_RERANK_METHOD=llm` 可明確啟用 LLM rerank（付出延遲換取精度）。
+    """
+    method = os.getenv("RAG_RERANK_METHOD", "").strip().lower()
+    if method in ("mmr", "llm", "none"):
+        return method
+    # legacy fallback：RAG_MMR_LAMBDA 存在 → mmr，否則預設 mmr（原本預設是 llm，已調整）
+    return "mmr"
+
+
+def _rerank_candidates(
+    matches: list[dict[str, Any]],
+    *,
+    top_n: int,
+    question: str,
+    chat_client: genai.Client,
+    rerank_model: str,
+) -> list[dict[str, Any]]:
+    method = _select_rerank_method()
+    if method == "none":
+        return matches[:top_n]
+    if method == "llm":
+        try:
+            return _rerank_with_llm(chat_client, rerank_model, question, matches, top_n=top_n)
+        except Exception as e:
+            logger.warning("LLM rerank failed, fall back to MMR: %s", e)
+    mmr_lambda_env = os.getenv("RAG_MMR_LAMBDA", "").strip()
+    try:
+        lam = float(mmr_lambda_env) if mmr_lambda_env else 0.6
+        lam = max(0.0, min(1.0, lam))
+    except ValueError:
+        lam = 0.6
+    return _mmr_select(matches, top_n=top_n, lambda_=lam)
+
+
 _GRAPH = None
 
 # Query Rewriting：依對話歷史將短問／代名詞問題改寫成完整檢索問句
@@ -483,9 +522,9 @@ def _build_graph():
                 aux_queries = _generate_auxiliary_queries(
                     chat_client, rag_aux_query_model, query_for_embed, max_queries=aux_max
                 )
-                for aux_q in aux_queries:
-                    if not aux_q:
-                        continue
+                aux_queries = [q for q in aux_queries if q]
+
+                def _run_aux_query(aux_q: str) -> tuple[str, list[dict[str, Any]] | None, Exception | None]:
                     try:
                         qvec_aux = _embed_query_common(
                             embed_client,
@@ -493,15 +532,31 @@ def _build_graph():
                             model=embed_model,
                             output_dimensionality=index_dim,
                         )
-                        res_aux = index.query(vector=qvec_aux, top_k=aux_top_k, include_metadata=True, filter=query_filter)
-                        for m in res_aux.get("matches", []) or []:
-                            k = _match_key(m)
-                            if k not in seen_keys:
-                                seen_keys.add(k)
-                                raw_matches.append(m)
-                    except Exception as e:
-                        _note_degraded(state, "aux_query_failed")
-                        logger.warning("Auxiliary query failed for %r: %s", aux_q, e, exc_info=True)
+                        res_aux = index.query(
+                            vector=qvec_aux,
+                            top_k=aux_top_k,
+                            include_metadata=True,
+                            filter=query_filter,
+                        )
+                        return aux_q, list(res_aux.get("matches", []) or []), None
+                    except Exception as e:  # pragma: no cover - network errors
+                        return aux_q, None, e
+
+                if aux_queries:
+                    max_workers = min(len(aux_queries), int(os.getenv("RAG_AUX_QUERY_CONCURRENCY", "4")))
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        futures = [pool.submit(_run_aux_query, q) for q in aux_queries]
+                        for fut in as_completed(futures):
+                            aux_q, matches_aux, err = fut.result()
+                            if err is not None:
+                                _note_degraded(state, "aux_query_failed")
+                                logger.warning("Auxiliary query failed for %r: %s", aux_q, err, exc_info=True)
+                                continue
+                            for m in matches_aux or []:
+                                k = _match_key(m)
+                                if k not in seen_keys:
+                                    seen_keys.add(k)
+                                    raw_matches.append(m)
                 merge_cap = int(os.getenv("RAG_MERGE_CAP", str(2 * internal_top_k)))
                 if len(raw_matches) > merge_cap:
                     raw_matches = sorted(
@@ -552,22 +607,13 @@ def _build_graph():
                 }
 
             rerank_top_n = min(max(top_k, 1), int(os.getenv("RAG_RERANK_TOP_N", "5")))
-            mmr_lambda_env = os.getenv("RAG_MMR_LAMBDA", "").strip()
-            if mmr_lambda_env:
-                try:
-                    lam = float(mmr_lambda_env)
-                    lam = max(0.0, min(1.0, lam))
-                except ValueError:
-                    lam = 0.6
-                best_matches = _mmr_select(filtered_matches, top_n=rerank_top_n, lambda_=lam)
-            else:
-                best_matches = _rerank_with_llm(
-                    chat_client,
-                    rag_rerank_model,
-                    question,
-                    filtered_matches,
-                    top_n=rerank_top_n,
-                )
+            best_matches = _rerank_candidates(
+                filtered_matches,
+                top_n=rerank_top_n,
+                question=question,
+                chat_client=chat_client,
+                rerank_model=rag_rerank_model,
+            )
 
             context, sources, cleaned_chunks = _format_context_common(best_matches)
             if not context:
@@ -855,22 +901,13 @@ def retrieve_only(
         return "(無檢索內容)", [], [], top_score
 
     rerank_top_n = min(max(top_k, 1), int(os.getenv("RAG_RERANK_TOP_N", "5")))
-    mmr_lambda_env = os.getenv("RAG_MMR_LAMBDA", "").strip()
-    if mmr_lambda_env:
-        try:
-            lam = float(mmr_lambda_env)
-            lam = max(0.0, min(1.0, lam))
-        except ValueError:
-            lam = 0.6
-        best_matches = _mmr_select(filtered_matches, top_n=rerank_top_n, lambda_=lam)
-    else:
-        best_matches = _rerank_with_llm(
-            chat_client,
-            rag_rerank_model,
-            question,
-            filtered_matches,
-            top_n=rerank_top_n,
-        )
+    best_matches = _rerank_candidates(
+        filtered_matches,
+        top_n=rerank_top_n,
+        question=question,
+        chat_client=chat_client,
+        rerank_model=rag_rerank_model,
+    )
     context, sources, cleaned = _format_context_common(best_matches)
     return context, sources, cleaned, top_score
 

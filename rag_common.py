@@ -58,18 +58,34 @@ class OllamaEmbeddingAdapter:
         return _EmbeddingResponse([_EmbeddingItem(list(item.embedding or [])) for item in resp.data])
 
 
-def chunk_text(text: str, *, chunk_size: int = 900, overlap: int = 150) -> list[str]:
-    """先依段落/標題切大區塊，再在區塊內做長度切片，減少語意被拆散。"""
+_HEADING_PATTERN = re.compile(
+    r"^(?:#+\s+|[一二三四五六七八九十百]+、|第\s*[0-9一二三四五六七八九十百]+\s*條)"
+)
+
+
+def chunk_text(text: str, *, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
+    """先依段落/標題/合約條款切大區塊，再在區塊內做長度切片。
+
+    針對合約文件：`第X條`、`## 一、`、`一、` 皆視為區塊邊界，
+    避免條款內容跨越 chunk 被拆散；若條款長度超過 chunk_size，
+    續段會補上條款首行讓語意脈絡不遺失。
+    """
     cleaned = "\n".join(line.rstrip() for line in text.splitlines()).strip()
     if not cleaned:
         return []
     if chunk_size <= overlap:
         raise ValueError("chunk_size 必須大於 overlap")
 
-    raw_blocks = re.split(r"\n\s*\n+", cleaned)
+    # 條款標記若出現在段落中間（沒有空行），強制在其前方插入空行以獨立成段
+    normalized = re.sub(
+        r"(?<=\n)(?=\s*(?:第\s*[0-9一二三四五六七八九十百]+\s*條|[一二三四五六七八九十百]+、|#+\s+))",
+        "\n",
+        cleaned,
+    )
+
+    raw_blocks = re.split(r"\n\s*\n+", normalized)
     blocks: list[str] = []
     current: list[str] = []
-    heading_pattern = re.compile(r"^(#+\s+|[一二三四五六七八九十]+、)")
 
     for block in raw_blocks:
         block = block.strip()
@@ -77,7 +93,7 @@ def chunk_text(text: str, *, chunk_size: int = 900, overlap: int = 150) -> list[
             continue
         lines = block.splitlines()
         first_line = lines[0].strip() if lines else ""
-        if heading_pattern.match(first_line) and current:
+        if _HEADING_PATTERN.match(first_line) and current:
             blocks.append("\n".join(current).strip())
             current = [block]
         else:
@@ -90,12 +106,18 @@ def chunk_text(text: str, *, chunk_size: int = 900, overlap: int = 150) -> list[
         if len(blk) <= chunk_size:
             chunks_out.append(blk)
             continue
+        first_line = blk.splitlines()[0].strip()
+        has_header = bool(_HEADING_PATTERN.match(first_line))
         start = 0
+        first_piece = True
         while start < len(blk):
             end = min(len(blk), start + chunk_size)
             piece = blk[start:end].strip()
             if piece:
+                if has_header and not first_piece:
+                    piece = f"{first_line}（續）\n{piece}"
                 chunks_out.append(piece)
+                first_piece = False
             if end >= len(blk):
                 break
             start = max(0, end - overlap)
@@ -294,11 +316,8 @@ def get_bm25_corpus_path() -> Path:
     return Path(p)
 
 
-def _bm25_tokenize(text: str) -> list[str]:
-    """BM25 用分詞：中文以字為單位、保留英文/數字詞，利於條號與術語匹配。"""
-    if not text or not text.strip():
-        return []
-    # 英文/數字連續成一 token，其餘（含中文）逐字
+def _char_tokenize(text: str) -> list[str]:
+    """舊版後援：中文逐字、英文/數字成詞。"""
     tokens: list[str] = []
     buf = ""
     for c in text:
@@ -313,6 +332,115 @@ def _bm25_tokenize(text: str) -> list[str]:
     if buf:
         tokens.append(buf)
     return tokens
+
+
+_JIEBA_MODULE: Any = None
+_JIEBA_IMPORT_FAILED = False
+
+# 合約／法條常見多字術語，避免 jieba 預設辭典把它們拆碎
+# （jieba 的通用辭典不含許多台灣法律專業詞彙）
+_LEGAL_TERMS: tuple[str, ...] = (
+    # 契約常見條款詞
+    "保密義務", "保密期間", "機密資訊", "營業秘密", "智慧財產權",
+    "著作財產權", "專利權", "商標權", "著作權",
+    "違約責任", "違約金", "懲罰性違約金", "損害賠償", "損害賠償責任",
+    "履約保證金", "押標金", "權利金", "授權金",
+    "連帶責任", "連帶保證", "瑕疵擔保", "瑕疵責任",
+    "不可抗力", "解除契約", "終止契約", "解除條件",
+    "管轄法院", "準據法", "仲裁條款", "爭議解決",
+    "付款條件", "交貨期限", "驗收標準", "驗收程序",
+    "退款機制", "退貨機制",
+    # 法律／法規
+    "政府採購法", "消費者保護法", "個人資料保護法", "個資法",
+    "公平交易法", "公司法", "勞動基準法", "勞基法",
+    "民事訴訟法", "強制執行法", "仲裁法",
+    "著作權法", "專利法", "商標法",
+    # 爭議／救濟
+    "違反契約", "契約終止", "定型化契約", "第三人利益契約",
+    "債務不履行", "給付不能", "給付遲延", "不完全給付",
+    "情事變更", "誠實信用原則",
+)
+
+
+def _apply_legal_userdict(jieba_mod: Any) -> None:
+    """將合約／法律術語加入 jieba 辭典，避免被切碎。
+
+    額外可由 `BM25_JIEBA_USERDICT` 指向使用者自訂 dict 檔（每行一個詞，格式見 jieba docs）。
+    """
+    for term in _LEGAL_TERMS:
+        try:
+            jieba_mod.add_word(term)
+        except Exception:  # pragma: no cover
+            pass
+    user_dict = os.getenv("BM25_JIEBA_USERDICT", "").strip()
+    if user_dict:
+        try:
+            jieba_mod.load_userdict(user_dict)
+        except Exception as e:  # pragma: no cover
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "Failed to load BM25_JIEBA_USERDICT=%r: %s", user_dict, e
+            )
+
+
+def _get_jieba() -> Any | None:
+    """Lazy 載入 jieba；若未安裝回傳 None（只警告一次）。"""
+    global _JIEBA_MODULE, _JIEBA_IMPORT_FAILED
+    if _JIEBA_MODULE is not None:
+        return _JIEBA_MODULE
+    if _JIEBA_IMPORT_FAILED:
+        return None
+    try:
+        import jieba  # type: ignore
+
+        # 關閉 jieba 初始化訊息，避免 Streamlit/測試輸出污染
+        jieba.setLogLevel(40)  # logging.ERROR
+        _apply_legal_userdict(jieba)
+        _JIEBA_MODULE = jieba
+        return jieba
+    except Exception as e:  # pragma: no cover - 僅在缺套件時觸發
+        _JIEBA_IMPORT_FAILED = True
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "jieba not available, BM25 fall back to char tokenizer: %s", e
+        )
+        return None
+
+
+def _bm25_tokenize(text: str) -> list[str]:
+    """BM25 用分詞：預設 jieba（中文詞級匹配），`BM25_TOKENIZER=char` 可切回逐字模式。
+
+    詞級分詞比逐字好的情境：
+    - 「管轄法院」「違約責任」「智慧財產權」等多字術語可整詞命中
+    - 避免高頻單字（的/之/與）稀釋相關性
+    """
+    if not text or not text.strip():
+        return []
+
+    mode = os.getenv("BM25_TOKENIZER", "jieba").strip().lower()
+    if mode == "char":
+        return _char_tokenize(text)
+
+    jieba = _get_jieba()
+    if jieba is None:
+        return _char_tokenize(text)
+
+    tokens: list[str] = []
+    for tok in jieba.lcut(text, cut_all=False, HMM=True):
+        tok = tok.strip()
+        if not tok:
+            continue
+        # 跳過純標點
+        if not any(c.isalnum() or _is_cjk(c) for c in tok):
+            continue
+        tokens.append(tok.lower() if tok.isascii() else tok)
+    return tokens
+
+
+def _is_cjk(c: str) -> bool:
+    return "\u4e00" <= c <= "\u9fff"
 
 
 def _bm25_lock_path() -> Path:

@@ -23,7 +23,15 @@ from expert_agents import (
 )
 from echarts_tools import create_chart_option
 from firecrawl_tools import scrape_url, search_and_scrape
+from intent_detector import (
+    _extract_url_from_text,
+    contract_risk_agent_intent,
+    contract_risk_with_law_intent,
+    firecrawl_intent,
+    tw_law_intent,
+)
 from llm_client import get_model_for_stage, get_timeout_for_stage
+from progress import emit_progress
 from rag_graph import retrieve_only, run_rag, search_similar, summarize_source
 from sources_registry import list_sources
 
@@ -60,122 +68,6 @@ def _timeout_kwargs(client: Any, stage: str) -> dict[str, Any]:
     if getattr(client, "_supports_request_timeout", False):
         return {"request_timeout_sec": timeout_sec}
     return {}
-
-
-def _extract_url_from_text(text: str) -> str | None:
-    """從文字中擷取第一個 http(s) URL。"""
-    if not text or not text.strip():
-        return None
-    m = re.search(r"https?://[^\s<>)\]]+", text.strip())
-    return m.group(0).rstrip(".,;:)") if m else None
-
-
-# ---------- Firecrawl 意圖判斷（Agent / Tool 層）----------
-# 先由此判斷「是否要用 Firecrawl、用哪一個」，再決定是否交給總管 Router。
-# 規則優先；若設 FIRECRAWL_USE_LLM_GATE=1 且規則無結果，可再跑一次 LLM 判斷。
-
-_FIRECRAWL_SCRAPE_PHRASES = (
-    "爬這個網頁", "擷取這個網頁", "抓這個網頁", "抓取網頁",
-    "擷取此 url", "擷取此 url", "擷取這個 url", "爬這個 url",
-    "幫我爬", "幫我擷取", "把這頁", "這則連結", "這個連結",
-)
-_FIRECRAWL_SEARCH_PHRASES = (
-    "搜尋並擷取", "擷取網路", "從網路搜尋並擷取",
-    "搜尋網路並擷取", "網路搜尋並擷取", "找.*新聞", "網路上的.*新聞",
-)
-
-
-def firecrawl_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """判斷是否應使用 Firecrawl 以及用哪一個 tool（scrape_url / firecrawl_search）。
-
-    規則優先、不呼叫 LLM，適合穩定觸發。回傳 (tool_name, tool_args) 或 None（交給總管 Router）。
-    """
-    if not question or not question.strip():
-        return None
-    q = question.strip()
-    url = _extract_url_from_text(q)
-
-    # 有 URL 且意圖像「擷取單頁」
-    if url:
-        for phrase in _FIRECRAWL_SCRAPE_PHRASES:
-            if phrase in q or phrase.replace("網頁", "連結") in q:
-                return ("scrape_url", {"url": url, "only_main_content": True})
-        if "擷取" in q or "爬" in q or "抓" in q:
-            return ("scrape_url", {"url": url, "only_main_content": True})
-
-    # 無 URL 但意圖像「搜尋並擷取」
-    for phrase in _FIRECRAWL_SEARCH_PHRASES:
-        if re.search(phrase, q):
-            query = q
-            for p in ("搜尋並擷取", "擷取網路", "從網路搜尋並擷取", "搜尋網路並擷取", "網路搜尋並擷取"):
-                query = query.replace(p, "").strip()
-            if re.match(r"^找.*新聞$", q):
-                query = re.sub(r"^找\s*", "", q).strip()
-            if query:
-                return ("firecrawl_search", {"query": query, "limit": 5})
-            break
-
-    # 關鍵字「新聞」「網路上的」等可能想用搜尋擷取
-    if re.search(r"(台灣|全球|最新).*新聞", q) or "網路上的" in q or "網路上找" in q:
-        return ("firecrawl_search", {"query": q, "limit": 5})
-
-    return None
-
-
-# ---------- 台灣法律／司法院檢索意圖（強制走 tw_law_web_search，確保會用網路搜尋）----------
-_TW_LAW_PHRASES = (
-    "司法院法學資料檢索",
-    "法學資料檢索系統",
-    "lawsearch.judicial",
-    "judicial.gov.tw",
-    "搜尋司法院",
-    "去搜尋司法院",
-    "查司法院",
-    "查詢.*法律條",
-    "查法律條文",
-    "查.*法第.*條",
-    "根據文件.*條例",
-    "根據文件.*法條",
-)
-
-
-def tw_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """使用者明確要查司法院／法律條文時，強制走 tw_law_web_search，確保會用網路搜尋而非只查知識庫。"""
-    if not question or not question.strip():
-        return None
-    q = question.strip()
-    for phrase in _TW_LAW_PHRASES:
-        if re.search(phrase, q):
-            # 用整句當 query，tw_law_web_search 會再加 site:judicial.gov.tw
-            return ("tw_law_web_search", {"query": q})
-    return None
-
-
-def contract_risk_with_law_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """只有在使用者明確要求「查法條／法律／司法院」時，才走合約＋法條查詢流程。"""
-    if not question or not question.strip():
-        return None
-    q = question.strip()
-    contract_terms = ("合約", "契約", "契約書", "租賃契約", "採購", "標案")
-    law_terms = ("法條", "法律", "條文", "民法", "消保法", "消費者保護法", "政府採購法", "條例", "司法院")
-    law_action_terms = ("查", "查詢", "依據", "引用", "比對", "對照")
-    if any(term in q for term in contract_terms) and any(term in q for term in law_terms):
-        return ("contract_risk_with_law_search", {})
-    if any(term in q for term in contract_terms) and "法規" in q and any(term in q for term in law_action_terms):
-        return ("contract_risk_with_law_search", {})
-    return None
-
-
-def contract_risk_agent_intent(question: str) -> Tuple[str, Dict[str, Any]] | None:
-    """合約／採購審閱類問句，一律走含法條查詢流程以自動附上司法院連結。"""
-    if not question or not question.strip():
-        return None
-    q = question.strip()
-    contract_terms = ("合約", "契約", "契約書", "採購", "租賃契約", "租賃", "標案")
-    action_terms = ("審閱", "分析", "檢查", "評估", "看看", "幫我看", "條款", "有什麼", "有哪些", "風險", "不利")
-    if any(t in q for t in contract_terms) and any(k in q for k in action_terms):
-        return ("contract_risk_with_law_search", {})
-    return None
 
 
 def firecrawl_intent_with_llm(question: str) -> Tuple[str, Dict[str, Any]] | None:
@@ -326,6 +218,7 @@ def _contract_risk_with_law_search_impl(
     流程：1) RAG 取合約 2) 抽出法條字號 3) 逐條查司法院 4) 合併 context 後由 LLM 做風險評估。
     回傳 (answer, sources, chunks)。sources 含合約 chunk 標籤＋外部 URL。chat_id 若設定則僅檢索該對話上傳的 chunks。
     """
+    emit_progress("contract_retrieve", "正在檢索合約內容…")
     context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
@@ -349,6 +242,14 @@ def _contract_risk_with_law_search_impl(
         # 合約未明確引用法條，依問題動態產生一條後備查詢
         q_short = question.strip()[:40]
         queries_to_run = [f"{q_short} 相關法律條文 site:judicial.gov.tw"]
+
+    if law_refs:
+        emit_progress(
+            "law_search",
+            f"擷取到 {len(law_refs)} 筆法條引用，並行搜尋司法院…",
+        )
+    else:
+        emit_progress("law_search", "合約未明示法條，依問題推導相關法規搜尋…")
 
     with ThreadPoolExecutor(max_workers=min(len(queries_to_run), 4)) as pool:
         futures = {pool.submit(_search_one, q): q for q in queries_to_run}
@@ -399,6 +300,7 @@ def _contract_risk_with_law_search_impl(
     else:
         prompt = f"## 問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
 
+    emit_progress("contract_generate", "正在產出條款風險評估…")
     client, model = _init_llm_client()
     contract_generate_model = get_model_for_stage("contract_risk_generate", model)
     contract_verify_model = get_model_for_stage("contract_risk_verify", contract_generate_model)
@@ -410,38 +312,42 @@ def _contract_risk_with_law_search_impl(
     )
     answer = (out.text or "").strip()
 
-    # 多一層 AI 自檢：以「回答＋來源摘要」請 LLM 驗證是否與來源一致，並產出簡短自檢結果附於文末供參考
-    try:
-        context_for_check = context_rag[:4500] + ("…" if len(context_rag) > 4500 else "")
-        law_joined = "\n".join(law_sections) if law_sections else ""
-        law_for_check = (law_joined[:3500] + ("…" if len(law_joined) > 3500 else "")) if law_joined else "（無外部法條內容）"
-        verify_system = (
-            "你是品質檢核員，只根據「風險評估回答」與「合約檢索摘要」「法條摘要」做一致性檢查。\n"
-            "請用以下結構產出簡短自檢結果（每項一至三句話為限）：\n"
-            "**1. 與合約檢索內容一致性**：回答中的條款描述、chunk 引用是否與合約摘要相符？若有未對應到來源的敘述請註明。\n"
-            "**2. 與法條／實務見解一致性**：回答中引用的法條或實務見解是否與下方法條摘要一致？有無過度推論或與法條明顯矛盾之處？\n"
-            "**3. 建議人工再確認之處**：列出建議法務或使用者再核對的項目（例如：具體金額、條號、責任歸屬）。\n"
-            "**4. 具體建議**：給出 1～3 條可執行的後續建議（例如：建議委請律師審閱某條、建議與對方確認某事項、建議補充查詢某法規）。\n"
-            "若整體一致、無明顯矛盾，也請簡要說明。禁止輸出與自檢無關的內容。"
-        )
-        verify_prompt = (
-            "## 風險評估回答（待驗證）\n\n" + (answer[:6000] + "…" if len(answer) > 6000 else answer)
-            + "\n\n## 合約檢索內容摘要（供對照）\n\n" + context_for_check
-            + "\n\n## 法條／實務見解摘要（供對照）\n\n" + law_for_check
-            + "\n\n請依指示產出上述自檢結果："
-        )
-        verify_out = client.models.generate_content(
-            model=contract_verify_model,
-            contents=verify_prompt,
-            config=types.GenerateContentConfig(system_instruction=verify_system),
-            **_timeout_kwargs(client, "contract_risk_verify"),
-        )
-        verify_text = (verify_out.text or "").strip()
-        if verify_text:
-            answer += "\n\n---\n\n**【AI 自檢】**\n\n" + verify_text + "\n\n*以上自檢僅供參考，不取代人工覆核與律師意見。*"
-    except Exception as e:
-        logger.warning("contract_risk_with_law_search: AI 自檢步驟失敗，略過: %s", e, exc_info=True)
-        answer += "\n\n---\n\n**【AI 自檢】**\n（本次自檢未執行或執行失敗，建議人工核對上述內容與來源。）"
+    # 多一層 AI 自檢：以「回答＋來源摘要」請 LLM 驗證是否與來源一致
+    # 預設關閉以節省延遲（多一次 LLM 調用，合約+法條路徑總耗時可降 5-10 秒）
+    # 需要嚴格品檢時設 CONTRACT_RISK_SELF_CHECK_ENABLED=1
+    self_check_enabled = os.getenv("CONTRACT_RISK_SELF_CHECK_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    if self_check_enabled:
+        try:
+            context_for_check = context_rag[:4500] + ("…" if len(context_rag) > 4500 else "")
+            law_joined = "\n".join(law_sections) if law_sections else ""
+            law_for_check = (law_joined[:3500] + ("…" if len(law_joined) > 3500 else "")) if law_joined else "（無外部法條內容）"
+            verify_system = (
+                "你是品質檢核員，只根據「風險評估回答」與「合約檢索摘要」「法條摘要」做一致性檢查。\n"
+                "請用以下結構產出簡短自檢結果（每項一至三句話為限）：\n"
+                "**1. 與合約檢索內容一致性**：回答中的條款描述、chunk 引用是否與合約摘要相符？若有未對應到來源的敘述請註明。\n"
+                "**2. 與法條／實務見解一致性**：回答中引用的法條或實務見解是否與下方法條摘要一致？有無過度推論或與法條明顯矛盾之處？\n"
+                "**3. 建議人工再確認之處**：列出建議法務或使用者再核對的項目（例如：具體金額、條號、責任歸屬）。\n"
+                "**4. 具體建議**：給出 1～3 條可執行的後續建議（例如：建議委請律師審閱某條、建議與對方確認某事項、建議補充查詢某法規）。\n"
+                "若整體一致、無明顯矛盾，也請簡要說明。禁止輸出與自檢無關的內容。"
+            )
+            verify_prompt = (
+                "## 風險評估回答（待驗證）\n\n" + (answer[:6000] + "…" if len(answer) > 6000 else answer)
+                + "\n\n## 合約檢索內容摘要（供對照）\n\n" + context_for_check
+                + "\n\n## 法條／實務見解摘要（供對照）\n\n" + law_for_check
+                + "\n\n請依指示產出上述自檢結果："
+            )
+            verify_out = client.models.generate_content(
+                model=contract_verify_model,
+                contents=verify_prompt,
+                config=types.GenerateContentConfig(system_instruction=verify_system),
+                **_timeout_kwargs(client, "contract_risk_verify"),
+            )
+            verify_text = (verify_out.text or "").strip()
+            if verify_text:
+                answer += "\n\n---\n\n**【AI 自檢】**\n\n" + verify_text + "\n\n*以上自檢僅供參考，不取代人工覆核與律師意見。*"
+        except Exception as e:
+            logger.warning("contract_risk_with_law_search: AI 自檢步驟失敗，略過: %s", e, exc_info=True)
+            answer += "\n\n---\n\n**【AI 自檢】**\n（本次自檢未執行或執行失敗，建議人工核對上述內容與來源。）"
 
     # 文末一律附加免責聲明，確保可見且不被遺漏
     if _CONTRACT_DISCLAIMER not in answer:

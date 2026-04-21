@@ -1,7 +1,10 @@
 """rag_common 單元測試（純函式，不打 API）。"""
+import os
+from unittest.mock import patch
+
 import pytest
 
-from rag_common import chunk_text, format_context, stable_id
+from rag_common import _bm25_tokenize, _char_tokenize, chunk_text, format_context, stable_id
 
 
 class TestChunkText:
@@ -24,6 +27,46 @@ class TestChunkText:
     def test_chunk_size_must_gt_overlap(self):
         with pytest.raises(ValueError, match="chunk_size"):
             chunk_text("x", chunk_size=100, overlap=100)
+
+    def test_contract_dai_x_tiao_becomes_own_chunk(self):
+        contract = (
+            "第一條 保密義務\n乙方對所取得之機密資訊負保密義務。\n"
+            "第二條 保密期間\n自簽署日起生效，滿五年止。\n"
+            "第三條 違約責任\n違約者應賠償全部損害。"
+        )
+        out = chunk_text(contract, chunk_size=1500, overlap=200)
+        assert len(out) == 3
+        assert out[0].startswith("第一條")
+        assert out[1].startswith("第二條")
+        assert out[2].startswith("第三條")
+
+    def test_markdown_heading_clauses(self):
+        contract = (
+            "## 一、保密義務\n乙方應保密。\n\n"
+            "## 二、保密期間\n五年。\n\n"
+            "## 三、違約責任\n賠償全部損害。"
+        )
+        out = chunk_text(contract, chunk_size=1500, overlap=200)
+        assert len(out) == 3
+        assert "保密義務" in out[0]
+        assert "保密期間" in out[1]
+
+    def test_oversized_clause_keeps_header_on_continuation(self):
+        long_body = "a" * 2000
+        text = f"第一條 保密義務\n{long_body}"
+        out = chunk_text(text, chunk_size=800, overlap=100)
+        assert len(out) >= 2
+        # 續段需補上條款首行以保留脈絡
+        assert "第一條" in out[1]
+        assert "（續）" in out[1]
+
+    def test_clauses_merged_without_blank_line(self):
+        # 某些 OCR 結果條款之間沒有空行
+        contract = "第一條 保密\n乙方應保密。\n第二條 期間\n五年。"
+        out = chunk_text(contract, chunk_size=1500, overlap=200)
+        assert len(out) == 2
+        assert out[0].startswith("第一條")
+        assert out[1].startswith("第二條")
 
 
 class TestStableId:
@@ -68,3 +111,40 @@ class TestFormatContext:
         ctx, sources, cleaned = format_context(matches)
         assert sources == []
         assert cleaned == []
+
+
+class TestBm25Tokenize:
+    def test_empty(self):
+        assert _bm25_tokenize("") == []
+        assert _bm25_tokenize("   ") == []
+
+    def test_char_mode_fallback(self):
+        with patch.dict(os.environ, {"BM25_TOKENIZER": "char"}):
+            tokens = _bm25_tokenize("第一條 NDA 五百萬")
+        # 舊版 char 模式：空白為分界，連續 alnum（含中文）成一 token
+        assert "NDA" in tokens
+        assert "第一條" in tokens
+        assert "五百萬" in tokens
+
+    def test_jieba_mode_merges_terms(self):
+        pytest.importorskip("jieba")
+        with patch.dict(os.environ, {"BM25_TOKENIZER": "jieba"}):
+            tokens = _bm25_tokenize("管轄法院為臺灣臺北地方法院")
+        # jieba 至少應把「管轄」或「法院」當作詞；逐字模式不會出現這些多字 token
+        assert any(len(t) >= 2 for t in tokens)
+        # 不應包含空白
+        assert all(t.strip() for t in tokens)
+
+    def test_jieba_consistency_query_matches_doc(self):
+        pytest.importorskip("jieba")
+        with patch.dict(os.environ, {"BM25_TOKENIZER": "jieba"}):
+            doc_tokens = set(_bm25_tokenize("乙方應對機密資訊負保密義務"))
+            query_tokens = set(_bm25_tokenize("保密義務"))
+        # 查詢詞必須能命中文件（詞級一致性）
+        assert query_tokens & doc_tokens
+
+    def test_char_tokenize_pure_function(self):
+        tokens = _char_tokenize("abc 123 第一條")
+        assert "abc" in tokens
+        assert "123" in tokens
+        assert "第一條" in tokens

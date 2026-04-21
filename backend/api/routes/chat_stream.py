@@ -51,6 +51,15 @@ def _run_pipeline_in_thread(
     """在子執行緒中跑 pipeline，透過 queue 回傳事件。"""
     try:
         from chat_service import answer_with_rag_and_log
+        from progress import set_progress_emitter
+
+        # 安裝進度 emitter，讓深層函式（如 contract+law 路徑）可直接推送狀態
+        def _emit(stage: str, message: str) -> None:
+            if cancel_event.is_set():
+                return
+            event_queue.put(("status", {"stage": stage, "message": message}))
+
+        set_progress_emitter(_emit)
 
         history_payload = _history_to_payload(body.history)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import contextvars
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -37,7 +38,9 @@ def _route_and_answer_with_timeout(
     timeout_sec = float(os.getenv("CHAT_ROUTE_TIMEOUT_SEC", "40").strip() or "40")
     poll_interval = 0.5  # 每 0.5s 檢查一次 cancel_event
     executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(route_and_answer, **kwargs)
+    # 複製當前 context，讓 worker thread 可讀取 ContextVar（例如 progress emitter）
+    ctx = contextvars.copy_context()
+    future = executor.submit(ctx.run, route_and_answer, **kwargs)
     elapsed = 0.0
     try:
         while elapsed < timeout_sec:

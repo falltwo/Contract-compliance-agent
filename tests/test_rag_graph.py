@@ -1,7 +1,18 @@
 """rag_graph 內部純函式單元測試（dedup、MMR、format 委派給 common）。"""
+import os
+from unittest.mock import patch
+
 import pytest
 
-from rag_graph import _dedup_matches, _get_text, _mmr_select, _normalize_text_for_dedup, _text_similarity
+from rag_graph import (
+    _dedup_matches,
+    _get_text,
+    _mmr_select,
+    _normalize_text_for_dedup,
+    _rerank_candidates,
+    _select_rerank_method,
+    _text_similarity,
+)
 
 
 def _m(text: str, score: float = 0.9) -> dict:
@@ -73,4 +84,54 @@ class TestMmrSelect:
         # λ=1 時只依 score，不考慮 diversity
         matches = [_m("a", 0.95), _m("a", 0.9), _m("b", 0.7)]  # 兩個 a 很相似
         out = _mmr_select(matches, top_n=2, lambda_=1.0)
+        assert len(out) == 2
+
+
+class TestSelectRerankMethod:
+    def test_default_is_mmr(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RAG_RERANK_METHOD", None)
+            os.environ.pop("RAG_MMR_LAMBDA", None)
+            assert _select_rerank_method() == "mmr"
+
+    def test_explicit_llm(self):
+        with patch.dict(os.environ, {"RAG_RERANK_METHOD": "llm"}):
+            assert _select_rerank_method() == "llm"
+
+    def test_explicit_none(self):
+        with patch.dict(os.environ, {"RAG_RERANK_METHOD": "none"}):
+            assert _select_rerank_method() == "none"
+
+    def test_invalid_falls_back_to_mmr(self):
+        with patch.dict(os.environ, {"RAG_RERANK_METHOD": "bogus"}):
+            assert _select_rerank_method() == "mmr"
+
+
+class TestRerankCandidates:
+    def test_none_method_returns_top_n_directly(self):
+        matches = [_m("a", 0.9), _m("b", 0.8), _m("c", 0.7)]
+        with patch.dict(os.environ, {"RAG_RERANK_METHOD": "none"}):
+            out = _rerank_candidates(
+                matches,
+                top_n=2,
+                question="q",
+                chat_client=None,
+                rerank_model="m",
+            )
+        assert len(out) == 2
+        assert out[0]["metadata"]["text"] == "a"
+
+    def test_mmr_default_no_llm_call(self):
+        matches = [_m("a", 0.9), _m("b", 0.8), _m("c", 0.7)]
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RAG_RERANK_METHOD", None)
+            os.environ.pop("RAG_MMR_LAMBDA", None)
+            # chat_client=None proves no LLM call is made for MMR
+            out = _rerank_candidates(
+                matches,
+                top_n=2,
+                question="q",
+                chat_client=None,
+                rerank_model="m",
+            )
         assert len(out) == 2
