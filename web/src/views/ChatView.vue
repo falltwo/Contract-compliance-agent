@@ -158,7 +158,7 @@ function parseAnswerToCards(answer: string): RiskCard[] {
       && /【風險等級】|【法務實務推演】|【修改建議】/.test(b));
   if (blocks.length === 0) return [];
 
-  return blocks.slice(0, 8).map((block, index) => {
+  return blocks.slice(0, 15).map((block, index) => {
     const titleMatch = block.match(ARTICLE_HEADER_RE);
     const title = titleMatch?.[1]?.trim() || `條款 ${index + 1}`;
     const typeLabel = extractField(block, "條款類型");
