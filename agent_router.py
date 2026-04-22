@@ -20,7 +20,6 @@ from expert_agents import (
     data_analyst_agent,
     esg_agent,
     financial_report_agent,
-    verify_and_correct_analysis,
 )
 from echarts_tools import create_chart_option
 from contract_risk_parser import parse_risk_cards
@@ -325,15 +324,25 @@ def _contract_risk_with_law_search_impl(
             blocks.append(f"{label}：{content}")
         history_text = "\n".join(blocks)
 
-    if history_text:
-        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
-    else:
-        prompt = f"## 問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
+    # 內嵌自我修正指令（單次 LLM call 完成分析＋事實核查，避免兩次 call 的延遲）
+    self_check_instruction = (
+        "\n\n---\n請依上述指示產出風險評估，完成後執行以下四項自我核查，"
+        "直接在同一回應中輸出修正後的最終版本（不需說明修改了哪裡）：\n"
+        "【核查A】 所有「模糊/不清楚」聲稱 → 確認合約原文無量化標準或明確例外清單。有則改為分析門檻嚴苛度。\n"
+        "【核查B】 所有「建議加入/增加 X」→ 確認 X 不在合約其他條款。有則改為「第N條已涵蓋，確認措辭是否具體」。\n"
+        "【核查C】 所有「缺乏定義/由甲方主觀認定」→ 確認定義表中確實無此定義後才能保留。\n"
+        "【核查D】 所有「合約未載明 Y」→ 確認全文真的沒有 Y 後才能保留。\n"
+        "核查完成後直接輸出最終分析，格式與原本相同。"
+    )
 
-    emit_progress("contract_generate", "正在產出條款風險評估…")
+    if history_text:
+        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n{combined_context}{self_check_instruction}"
+    else:
+        prompt = f"## 問題\n{question}\n\n{combined_context}{self_check_instruction}"
+
+    emit_progress("contract_generate", "正在產出條款風險評估（含自我核查）…")
     client, model = _init_llm_client()
     contract_generate_model = get_model_for_stage("contract_risk_generate", model)
-    contract_verify_model = get_model_for_stage("contract_risk_verify", contract_generate_model)
     out = client.models.generate_content(
         model=contract_generate_model,
         contents=prompt,
@@ -341,23 +350,6 @@ def _contract_risk_with_law_search_impl(
         **_timeout_kwargs(client, "contract_risk_generate"),
     )
     answer = (out.text or "").strip()
-
-    # 驗證修正通道（Verification Pass）：對草稿進行事實核查並直接修正錯誤
-    # 預設開啟；設 CONTRACT_RISK_VERIFY_ENABLED=0 可關閉（節省約 15-25 秒）
-    verify_enabled = os.getenv("CONTRACT_RISK_VERIFY_ENABLED", "1").strip().lower() not in ("0", "false", "no")
-    if verify_enabled and answer:
-        try:
-            emit_progress("contract_verify", "🔍 正在交叉驗證分析結果，核查事實錯誤…")
-            answer = verify_and_correct_analysis(
-                draft_answer=answer,
-                contract_full_text=context_rag,
-                llm_client=client,
-                model=contract_verify_model,
-                timeout_kwargs=_timeout_kwargs(client, "contract_risk_verify"),
-            )
-            logger.info("contract_risk_with_law_search: verification pass completed")
-        except Exception as e:
-            logger.warning("contract_risk_with_law_search: verification pass failed, using draft: %s", e, exc_info=True)
 
     # 文末一律附加免責聲明，確保可見且不被遺漏
     if _CONTRACT_DISCLAIMER not in answer:
