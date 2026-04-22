@@ -334,6 +334,30 @@ def _contract_risk_with_law_search_impl(
             [],
         )
 
+    # 補抓每個來源文件的首頁 chunk（chunk_index=0），確保合約基本資訊（編號、日期）在 context 中
+    try:
+        from rag_common import load_bm25_corpus
+        corpus = load_bm25_corpus()
+        retrieved_sources = {c["tag"].split("#chunk")[0] for c in chunks_rag if "#chunk" in c.get("tag", "")}
+        existing_tags = {c["tag"] for c in chunks_rag}
+        header_blocks: list[str] = []
+        for row in corpus:
+            src = str(row.get("source", ""))
+            if src not in retrieved_sources:
+                continue
+            if int(row.get("chunk_index", 999)) != 0:
+                continue
+            tag = f"{src}#chunk0"
+            if tag in existing_tags:
+                continue
+            text = str(row.get("text", "")).strip()
+            if text:
+                header_blocks.append(f"[{tag}]\n{text}")
+        if header_blocks:
+            context_rag = "## 合約首頁資訊（自動補充）\n\n" + "\n\n".join(header_blocks) + "\n\n" + context_rag
+    except Exception as exc:
+        logger.warning("header chunk fetch failed: %s", exc)
+
     law_refs = _extract_law_refs_from_text(context_rag)
     law_sections: List[str] = []
     web_urls: List[str] = []
