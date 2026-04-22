@@ -393,6 +393,7 @@ async function sendMessage() {
     strict: settings.strict,
     chat_id: convId,
     rag_scope_chat_id: settings.resolveRagScopeChatId(convId),
+    active_source: preview.value?.source ?? undefined,
     ...pendingPart,
   };
 

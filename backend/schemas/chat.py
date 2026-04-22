@@ -23,6 +23,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="若設定，檢索僅限該對話上傳之 chunks（對齊「只搜尋此對話上傳的檔案」）",
     )
+    active_source: str | None = Field(
+        default=None,
+        description="使用者目前正在預覽的文件 source 路徑；合約審閱時只分析此文件",
+    )
     original_question: str | None = None
     clarification_reply: str | None = None
     chart_confirmation_question: str | None = None

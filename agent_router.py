@@ -321,12 +321,23 @@ def _contract_risk_with_law_search_impl(
     top_k: int,
     history: List[Dict[str, Any]] | None,
     chat_id: str | None = None,
+    active_source: str | None = None,
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """
     流程：1) RAG 取合約 2) 抽出法條字號 3) 逐條查司法院 4) 合併 context 後由 LLM 做風險評估。
     回傳 (answer, sources, chunks)。sources 含合約 chunk 標籤＋外部 URL。chat_id 若設定則僅檢索該對話上傳的 chunks。
     """
     context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
+
+    # 若前端指定了目前預覽的文件，只保留該來源的 chunks，避免多份合約互相污染
+    if active_source and chunks_rag:
+        filtered = [c for c in chunks_rag if active_source in c.get("tag", "")]
+        if filtered:
+            chunks_rag = filtered
+            context_rag = "\n\n".join(f"[{c['tag']}]\n{c['text']}" for c in chunks_rag)
+        else:
+            logger.warning("active_source filter returned 0 chunks, falling back to full retrieval")
+
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
             "目前知識庫中沒有與合約相關的內容。請先上傳並灌入合約／採購文件，再使用「合約審閱（含法條查詢）」功能。",
@@ -738,6 +749,7 @@ def route_and_answer(
     strict: bool = True,
     chat_id: str | None = None,
     rag_scope_chat_id: str | None = None,
+    active_source: str | None = None,
     original_question: str | None = None,
     clarification_reply: str | None = None,
     chart_confirmation_question: str | None = None,
@@ -976,7 +988,8 @@ def route_and_answer(
     if tool == "contract_risk_with_law_search":
         top_k_expert = max(top_k, int(tool_args.get("top_k") or top_k))
         answer, sources, chunks = _contract_risk_with_law_search_impl(
-            question=question, top_k=top_k_expert, history=history, chat_id=rag_scope_chat_id
+            question=question, top_k=top_k_expert, history=history,
+            chat_id=rag_scope_chat_id, active_source=active_source,
         )
         return answer, sources, chunks, "contract_risk_with_law_search", None
 

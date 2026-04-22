@@ -63,6 +63,7 @@ def _run_pipeline_in_thread(
             strict=body.strict,
             chat_id=body.chat_id,
             rag_scope_chat_id=body.rag_scope_chat_id,
+            active_source=body.active_source,
             original_question=body.original_question,
             clarification_reply=body.clarification_reply,
             chart_confirmation_question=body.chart_confirmation_question,

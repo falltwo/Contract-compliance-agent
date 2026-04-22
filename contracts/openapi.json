@@ -643,6 +643,18 @@
             "title": "Rag Scope Chat Id",
             "description": "若設定，檢索僅限該對話上傳之 chunks（對齊「只搜尋此對話上傳的檔案」）"
           },
+          "active_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Source",
+            "description": "使用者目前正在預覽的文件 source 路徑；合約審閱時只分析此文件"
+          },
           "original_question": {
             "anyOf": [
               {
