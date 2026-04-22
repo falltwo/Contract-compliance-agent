@@ -290,17 +290,22 @@ def _contract_risk_with_law_search_impl(
     else:
         emit_progress("law_search", "合約未明示法條，依問題推導相關法規搜尋…")
 
+    # 法條搜尋設 8 秒整體 timeout，超時直接跳過，不影響合約分析主流程
+    _LAW_SEARCH_TIMEOUT = int(os.getenv("LAW_SEARCH_TIMEOUT_SEC", "8"))
     with ThreadPoolExecutor(max_workers=min(len(queries_to_run), 4)) as pool:
         futures = {pool.submit(_search_one, q): q for q in queries_to_run}
-        for fut in as_completed(futures):
-            try:
-                ref, block, urls = fut.result()
-                if block and "無法使用網路搜尋" not in block:
-                    label = ref if ref in law_refs else "相關法規與實務"
-                    law_sections.append(f"### {label}\n{block}")
-                    web_urls.extend(urls)
-            except Exception as exc:
-                logger.warning("law search failed: %s", exc)
+        try:
+            for fut in as_completed(futures, timeout=_LAW_SEARCH_TIMEOUT):
+                try:
+                    ref, block, urls = fut.result()
+                    if block and "無法使用網路搜尋" not in block:
+                        label = ref if ref in law_refs else "相關法規與實務"
+                        law_sections.append(f"### {label}\n{block}")
+                        web_urls.extend(urls)
+                except Exception as exc:
+                    logger.warning("law search failed: %s", exc)
+        except Exception:
+            logger.warning("law search timed out after %ds, proceeding without external law refs", _LAW_SEARCH_TIMEOUT)
 
     crawl_law_text = ""  # Firecrawl 爬蟲已停用（速度考量）
 
@@ -334,23 +339,12 @@ def _contract_risk_with_law_search_impl(
             blocks.append(f"{label}：{content}")
         history_text = "\n".join(blocks)
 
-    # 內嵌自我修正指令（單次 LLM call 完成分析＋事實核查，避免兩次 call 的延遲）
-    self_check_instruction = (
-        "\n\n---\n請依上述指示產出風險評估，完成後執行以下四項自我核查，"
-        "直接在同一回應中輸出修正後的最終版本（不需說明修改了哪裡）：\n"
-        "【核查A】 所有「模糊/不清楚」聲稱 → 確認合約原文無量化標準或明確例外清單。有則改為分析門檻嚴苛度。\n"
-        "【核查B】 所有「建議加入/增加 X」→ 確認 X 不在合約其他條款。有則改為「第N條已涵蓋，確認措辭是否具體」。\n"
-        "【核查C】 所有「缺乏定義/由甲方主觀認定」→ 確認定義表中確實無此定義後才能保留。\n"
-        "【核查D】 所有「合約未載明 Y」→ 確認全文真的沒有 Y 後才能保留。\n"
-        "核查完成後直接輸出最終分析，格式與原本相同。"
-    )
-
     if history_text:
-        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n{combined_context}{self_check_instruction}"
+        prompt = f"## 對話歷史\n{history_text}\n\n## 目前問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
     else:
-        prompt = f"## 問題\n{question}\n\n{combined_context}{self_check_instruction}"
+        prompt = f"## 問題\n{question}\n\n{combined_context}\n\n請依上述指示產出風險評估："
 
-    emit_progress("contract_generate", "正在產出條款風險評估（含自我核查）…")
+    emit_progress("contract_generate", "正在產出條款風險評估…")
     client, model = _init_llm_client()
     contract_generate_model = get_model_for_stage("contract_risk_generate", model)
     out = client.models.generate_content(
