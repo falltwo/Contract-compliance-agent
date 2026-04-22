@@ -34,7 +34,7 @@ def _route_and_answer_with_timeout(
     cancel_event: threading.Event | None = None,
     **kwargs: Any,
 ) -> tuple[str, list[str], list[dict[str, Any]], str, dict[str, Any] | None]:
-    timeout_sec = float(os.getenv("CHAT_ROUTE_TIMEOUT_SEC", "40").strip() or "40")
+    timeout_sec = float(os.getenv("CHAT_ROUTE_TIMEOUT_SEC", "120").strip() or "120")
     poll_interval = 0.5  # 每 0.5s 檢查一次 cancel_event
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(route_and_answer, **kwargs)
