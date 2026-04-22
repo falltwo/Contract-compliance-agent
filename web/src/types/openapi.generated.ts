@@ -369,6 +369,11 @@ export interface components {
             chart_confirmation_question?: string | null;
             /** Chart Confirmation Reply */
             chart_confirmation_reply?: string | null;
+            /**
+             * Active Source
+             * @description 使用者目前正在預覽的文件 source 路徑；合約審閱時只分析此文件
+             */
+            active_source?: string | null;
         };
         /** ChatResponse */
         ChatResponse: {
