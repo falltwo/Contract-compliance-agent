@@ -221,16 +221,33 @@ def _contract_risk_with_law_search_impl(
     回傳 (answer, sources, chunks)。sources 含合約 chunk 標籤＋外部 URL。chat_id 若設定則僅檢索該對話上傳的 chunks。
     """
     emit_progress("contract_retrieve", "正在檢索合約內容…")
-    context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
 
-    # 若前端指定了目前預覽的文件，只保留該來源的 chunks，避免多份合約互相污染
-    if active_source and chunks_rag:
-        filtered = [c for c in chunks_rag if active_source in c.get("tag", "")]
-        if filtered:
-            chunks_rag = filtered
-            context_rag = "\n\n".join(f"[{c['tag']}]\n{c['text']}" for c in chunks_rag)
-        else:
-            logger.warning("active_source filter returned 0 chunks, falling back to full retrieval")
+    # 若前端指定了目前預覽的文件，直接從 BM25 語料庫按來源路徑取 chunks
+    # 不靠語意搜尋，避免多份合約混雜
+    if active_source:
+        try:
+            from rag_common import load_bm25_corpus
+            corpus = load_bm25_corpus()
+            source_rows = sorted(
+                [r for r in corpus if str(r.get("source", "")) == active_source],
+                key=lambda r: int(r.get("chunk_index", 0)),
+            )
+            if source_rows:
+                chunks_rag = [
+                    {"tag": f"{r['source']}#chunk{r['chunk_index']}", "text": str(r.get("text", "")).strip()}
+                    for r in source_rows
+                    if str(r.get("text", "")).strip()
+                ]
+                context_rag = "\n\n".join(f"[{c['tag']}]\n{c['text']}" for c in chunks_rag)
+                logger.info("active_source direct load: %d chunks from %s", len(chunks_rag), active_source)
+            else:
+                logger.warning("active_source %s not found in corpus, falling back to RAG", active_source)
+                context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
+        except Exception as exc:
+            logger.warning("active_source direct load failed: %s, falling back to RAG", exc)
+            context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
+    else:
+        context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
 
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
@@ -238,37 +255,6 @@ def _contract_risk_with_law_search_impl(
             [],
             [],
         )
-
-    # 補抓主文件的首頁 chunk（chunk_index=0），確保合約基本資訊（編號、日期）在 context 中
-    # 只注入「被檢索到最多次」的那份文件，避免多份合約同時在知識庫時注入錯誤文件的首頁
-    try:
-        from collections import Counter
-        from rag_common import load_bm25_corpus
-        source_counts = Counter(
-            c["tag"].split("#chunk")[0]
-            for c in chunks_rag
-            if "#chunk" in c.get("tag", "")
-        )
-        primary_source = source_counts.most_common(1)[0][0] if source_counts else None
-        if primary_source:
-            corpus = load_bm25_corpus()
-            existing_tags = {c["tag"] for c in chunks_rag}
-            primary_tag = f"{primary_source}#chunk0"
-            if primary_tag not in existing_tags:
-                for row in corpus:
-                    if str(row.get("source", "")) != primary_source:
-                        continue
-                    if int(row.get("chunk_index", 999)) != 0:
-                        continue
-                    text = str(row.get("text", "")).strip()
-                    if text:
-                        context_rag = (
-                            f"## 合約首頁資訊（主文件：{primary_source}）\n\n"
-                            f"[{primary_tag}]\n{text}\n\n" + context_rag
-                        )
-                    break
-    except Exception as exc:
-        logger.warning("header chunk fetch failed: %s", exc)
 
     law_refs = _extract_law_refs_from_text(context_rag)
     law_sections: List[str] = []
@@ -282,9 +268,8 @@ def _contract_risk_with_law_search_impl(
 
     queries_to_run: List[str] = list(law_refs) if law_refs else []
     if not queries_to_run:
-        # 合約未明確引用法條，依問題動態產生一條後備查詢
-        q_short = question.strip()[:40]
-        queries_to_run = [f"{q_short} 相關法律條文 site:judicial.gov.tw"]
+        # 合約未明確引用法條，用固定的合約法律後備查詢（避免把問題原文送出去造成不相關結果）
+        queries_to_run = ["企業IT採購合約 民法承攬 驗收 違約責任 site:judicial.gov.tw"]
 
     if law_refs:
         emit_progress(
