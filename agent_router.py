@@ -228,27 +228,34 @@ def _contract_risk_with_law_search_impl(
             [],
         )
 
-    # 補抓每個來源文件的首頁 chunk（chunk_index=0），確保合約基本資訊（編號、日期）在 context 中
+    # 補抓主文件的首頁 chunk（chunk_index=0），確保合約基本資訊（編號、日期）在 context 中
+    # 只注入「被檢索到最多次」的那份文件，避免多份合約同時在知識庫時注入錯誤文件的首頁
     try:
+        from collections import Counter
         from rag_common import load_bm25_corpus
-        corpus = load_bm25_corpus()
-        retrieved_sources = {c["tag"].split("#chunk")[0] for c in chunks_rag if "#chunk" in c.get("tag", "")}
-        existing_tags = {c["tag"] for c in chunks_rag}
-        header_blocks: list[str] = []
-        for row in corpus:
-            src = str(row.get("source", ""))
-            if src not in retrieved_sources:
-                continue
-            if int(row.get("chunk_index", 999)) != 0:
-                continue
-            tag = f"{src}#chunk0"
-            if tag in existing_tags:
-                continue
-            text = str(row.get("text", "")).strip()
-            if text:
-                header_blocks.append(f"[{tag}]\n{text}")
-        if header_blocks:
-            context_rag = "## 合約首頁資訊（自動補充）\n\n" + "\n\n".join(header_blocks) + "\n\n" + context_rag
+        source_counts = Counter(
+            c["tag"].split("#chunk")[0]
+            for c in chunks_rag
+            if "#chunk" in c.get("tag", "")
+        )
+        primary_source = source_counts.most_common(1)[0][0] if source_counts else None
+        if primary_source:
+            corpus = load_bm25_corpus()
+            existing_tags = {c["tag"] for c in chunks_rag}
+            primary_tag = f"{primary_source}#chunk0"
+            if primary_tag not in existing_tags:
+                for row in corpus:
+                    if str(row.get("source", "")) != primary_source:
+                        continue
+                    if int(row.get("chunk_index", 999)) != 0:
+                        continue
+                    text = str(row.get("text", "")).strip()
+                    if text:
+                        context_rag = (
+                            f"## 合約首頁資訊（主文件：{primary_source}）\n\n"
+                            f"[{primary_tag}]\n{text}\n\n" + context_rag
+                        )
+                    break
     except Exception as exc:
         logger.warning("header chunk fetch failed: %s", exc)
 
