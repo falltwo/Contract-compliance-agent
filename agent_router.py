@@ -222,73 +222,10 @@ def _contract_risk_with_law_search_impl(
     """
     emit_progress("contract_retrieve", "正在檢索合約內容…")
 
-    # 若前端指定了目前預覽的文件，直接從 BM25 語料庫按來源路徑取 chunks
-    # 若前端指定了目前預覽的文件，直接從 BM25 語料庫按來源路徑取 chunks
-    # 不靠語意搜尋，避免多份合約混雜
-    if active_source:
-        try:
-            from rag_common import load_bm25_corpus, build_bm25_index, _bm25_tokenize
-            import numpy as np
-            corpus = load_bm25_corpus()
-            source_rows = sorted(
-                [r for r in corpus if str(r.get("source", "")) == active_source],
-                key=lambda r: int(r.get("chunk_index", 0)),
-            )
-            if source_rows:
-                # BM25 relevance 排序：對問題最相關的 chunks 優先，再按原始順序重排
-                # 解決「截斷只取前段」問題：改為取全合約中最重要的條款
-                _MAX_RAG_CHARS = int(os.getenv("CONTRACT_RAG_MAX_CHARS", "16000"))
-                context_rag_full = "\n\n".join(
-                    f"[{r['source']}#chunk{r['chunk_index']}]\n{r.get('text','').strip()}"
-                    for r in source_rows if r.get("text", "").strip()
-                )
-                if len(context_rag_full) <= _MAX_RAG_CHARS:
-                    # 合約夠短，全部放入
-                    selected_rows = source_rows
-                else:
-                    # 合約較長：用 BM25 選最相關 chunks，再按原始順序排列
-                    try:
-                        bm25_obj, _, _ = build_bm25_index(source_rows)
-                        q_tokens = _bm25_tokenize(question)
-                        scores = bm25_obj.get_scores(q_tokens) if (bm25_obj and q_tokens) else []
-                        if len(scores) == len(source_rows):
-                            ranked_idx = list(np.argsort(scores)[::-1])
-                        else:
-                            ranked_idx = list(range(len(source_rows)))
-                        # 貪婪選取：依 relevance 順序加入，直到字元上限
-                        selected_idx = set()
-                        running_chars = 0
-                        for idx in ranked_idx:
-                            t = (source_rows[idx].get("text") or "").strip()
-                            if running_chars + len(t) > _MAX_RAG_CHARS:
-                                break
-                            selected_idx.add(idx)
-                            running_chars += len(t)
-                        # 保持原始條文順序
-                        selected_rows = [source_rows[i] for i in sorted(selected_idx)]
-                        logger.info(
-                            "active_source BM25 selection: %d/%d chunks kept (%d chars)",
-                            len(selected_rows), len(source_rows), running_chars,
-                        )
-                    except Exception as bm25_exc:
-                        logger.warning("BM25 relevance sort failed (%s), using sequential truncation", bm25_exc)
-                        selected_rows = source_rows
-
-                chunks_rag = [
-                    {"tag": f"{r['source']}#chunk{r['chunk_index']}", "text": str(r.get("text", "")).strip()}
-                    for r in selected_rows if str(r.get("text", "")).strip()
-                ]
-                context_rag = "\n\n".join(f"[{c['tag']}]\n{c['text']}" for c in chunks_rag)
-                sources_rag: List[str] = [active_source]
-                logger.info("active_source direct load: %d chunks from %s", len(chunks_rag), active_source)
-            else:
-                logger.warning("active_source %s not found in corpus, falling back to RAG", active_source)
-                context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
-        except Exception as exc:
-            logger.warning("active_source direct load failed: %s, falling back to RAG", exc)
-            context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
-    else:
-        context_rag, sources_rag, chunks_rag, _ = retrieve_only(question=question, top_k=max(top_k, 14), chat_id=chat_id)
+    # RAG 語意檢索：top-k chunks，與流程圖 retrieve_only → RG 一致
+    context_rag, sources_rag, chunks_rag, _ = retrieve_only(
+        question=question, top_k=max(top_k, 14), chat_id=chat_id
+    )
 
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
