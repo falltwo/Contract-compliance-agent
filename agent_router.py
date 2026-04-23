@@ -223,8 +223,9 @@ def _contract_risk_with_law_search_impl(
     emit_progress("contract_retrieve", "正在檢索合約內容…")
 
     # RAG 語意檢索：top-k chunks，與流程圖 retrieve_only → RG 一致
+    # top_k 拉高至 25 讓合約各條款有較完整的覆蓋，降低條文對應錯誤機率
     context_rag, sources_rag, chunks_rag, _ = retrieve_only(
-        question=question, top_k=max(top_k, 14), chat_id=chat_id
+        question=question, top_k=max(top_k, 25), chat_id=chat_id
     )
 
     # 將 chunks 按 chunk_index 升冪重排，確保 LLM 看到的條款順序與原文一致
