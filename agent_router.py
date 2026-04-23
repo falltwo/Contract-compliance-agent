@@ -230,12 +230,30 @@ def _contract_risk_with_law_search_impl(
 
     # 將 chunks 按 chunk_index 升冪重排，確保 LLM 看到的條款順序與原文一致
     # （retrieve_only 依相關性分數排序，未重排則高分 chunk 先出現，條款順序錯亂）
+    _ARTICLE_LABEL_RE = re.compile(
+        r"^(第[一二三四五六七八九十百千萬\d]+條(?:（續）)?(?:[　 \t]*[^\n]{0,30})?)"
+    )
+
+    def _chunk_section_label(chunk: Dict[str, Any]) -> str:
+        """從 chunk 文字第一行提取條款標題作為區段標籤。
+        若第一行符合「第X條」格式，回傳「第X條 標題」；否則回傳原始 tag。"""
+        text = chunk.get("text", "").strip()
+        first_line = text.split("\n")[0].strip() if text else ""
+        m = _ARTICLE_LABEL_RE.match(first_line)
+        if m:
+            return m.group(1).strip()
+        return chunk.get("tag", chunk.get("source", ""))
+
     if chunks_rag:
         chunks_rag = sorted(chunks_rag, key=lambda c: int(c.get("chunk_index", 0)))
-        context_rag = "\n\n".join(
-            f"[{c.get('tag', c.get('source', ''))}]\n{c.get('text', '').strip()}"
-            for c in chunks_rag if c.get("text", "").strip()
-        )
+        context_parts: List[str] = []
+        for c in chunks_rag:
+            text = c.get("text", "").strip()
+            if not text:
+                continue
+            label = _chunk_section_label(c)
+            context_parts.append(f"[{label}]\n{text}")
+        context_rag = "\n\n".join(context_parts)
 
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
