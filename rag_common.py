@@ -65,7 +65,7 @@ _HEADING_PATTERN = re.compile(
 # 合約條文條號正則：支援中文數字及阿拉伯數字
 _ARTICLE_NUM_RE = r"[一二三四五六七八九十百千萬\d]+"
 _ARTICLE_SPLIT_RE = re.compile(
-    rf"(?=第\s*{_ARTICLE_NUM_RE}\s*條[\s\u3000：:])",
+    rf"(?m)^第\s*{_ARTICLE_NUM_RE}\s*條",
     re.UNICODE,
 )
 _ARTICLE_HEADER_RE = re.compile(
