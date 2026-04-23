@@ -10,7 +10,7 @@ from typing import Any
 
 from pypdf import PdfReader
 
-from rag_common import append_bm25_corpus, chunk_text, chunk_contract_by_article, is_contract_text, embed_texts, stable_id
+from rag_common import append_bm25_corpus, chunk_text, chunk_contract_by_article, is_contract_text, embed_texts, stable_id, load_bm25_corpus, save_bm25_corpus
 from sources_registry import update_registry_on_ingest
 
 ALLOWED_SUFFIXES = (".txt", ".md", ".pdf", ".docx")
@@ -92,6 +92,24 @@ def ingest_file_items(
             source = f"uploaded/{chat_id}/{name}"
         else:
             source = f"uploaded/{name}"
+
+        # 重新上傳時先刪除同檔名的所有舊向量（不論來自哪個 chat_id）
+        # 用 BM25 corpus 查舊 ID 再刪 Pinecone，避免新舊 chunk 並存造成分析混亂
+        try:
+            corpus = load_bm25_corpus()
+            suffix = f"/{name}"
+            old_ids = [str(c["id"]) for c in corpus
+                       if c.get("source", "").endswith(suffix) and c.get("id")]
+            remaining_corpus = [c for c in corpus
+                                 if not c.get("source", "").endswith(suffix)]
+            if old_ids:
+                _batch = 100
+                for _i in range(0, len(old_ids), _batch):
+                    index.delete(ids=old_ids[_i:_i + _batch])
+                save_bm25_corpus(remaining_corpus)
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("pre-ingest cleanup failed for %s: %s", name, _exc)
 
         for i, part in enumerate(parts):
             all_sources.append(source)
