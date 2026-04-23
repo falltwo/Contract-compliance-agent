@@ -349,10 +349,8 @@ const keyDates = computed(() => [
 ]);
 
 const quickActions = [
-  { label: "建議修改", prompt: "請依據目前內容提出修約建議。" },
   { label: "法遵檢查", prompt: "請檢查這份合約的法遵風險。" },
   { label: "風險摘要", prompt: "請整理這份合約的主要風險。" },
-  { label: "匯出報告", prompt: "請整理成可以輸出的風險摘要報告。" },
 ];
 
 function severityLabel(severity: RiskCard["severity"]): string {
