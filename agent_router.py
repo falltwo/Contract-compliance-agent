@@ -227,6 +227,15 @@ def _contract_risk_with_law_search_impl(
         question=question, top_k=max(top_k, 14), chat_id=chat_id
     )
 
+    # 將 chunks 按 chunk_index 升冪重排，確保 LLM 看到的條款順序與原文一致
+    # （retrieve_only 依相關性分數排序，未重排則高分 chunk 先出現，條款順序錯亂）
+    if chunks_rag:
+        chunks_rag = sorted(chunks_rag, key=lambda c: int(c.get("chunk_index", 0)))
+        context_rag = "\n\n".join(
+            f"[{c.get('tag', c.get('source', ''))}]\n{c.get('text', '').strip()}"
+            for c in chunks_rag if c.get("text", "").strip()
+        )
+
     if not context_rag or context_rag.strip() == "(無檢索內容)" or not chunks_rag:
         return (
             "目前知識庫中沒有與合約相關的內容。請先上傳並灌入合約／採購文件，再使用「合約審閱（含法條查詢）」功能。",
