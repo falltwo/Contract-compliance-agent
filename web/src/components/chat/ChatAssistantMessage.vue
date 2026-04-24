@@ -62,7 +62,9 @@ function linkLawRefs(html: string): string {
 
 function mdToHtml(src: string): string {
   const html = marked(src, { async: false }) as string;
-  return DOMPurify.sanitize(linkLawRefs(html));
+  const linkedHtml = linkLawRefs(html);
+  const plainHtml = linkedHtml.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1");
+  return DOMPurify.sanitize(plainHtml);
 }
 
 const split = computed(() => splitAnswerAndRefs(props.message.content));

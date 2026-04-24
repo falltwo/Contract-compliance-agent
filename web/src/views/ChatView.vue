@@ -160,7 +160,8 @@ marked.use({ breaks: true });
 
 function mdToHtml(src: string): string {
   const rawHtml = marked(src || "", { async: false }) as string;
-  return DOMPurify.sanitize(rawHtml);
+  const plainHtml = rawHtml.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1");
+  return DOMPurify.sanitize(plainHtml);
 }
 
 function stripMarkdown(s: string): string {
