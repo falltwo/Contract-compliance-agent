@@ -60,13 +60,15 @@ web/.env.frontend
 web/.env.admin
 
 # ---------- 專案文件 ----------
-# 預設忽略 docs 下其他臨時文件，但保留已納入版本控管的摘要文件
+# 預設忽略 docs 下其他臨時文件，但保留已納入版本控管的正式文件
 docs/*
 !docs/README.md
-!docs/update-summary-2026-04-15.md
-!docs/update-summary-2026-04-17.md
 !docs/DGX_網站使用與維運手冊_v1.2.md
 uploads/
+
+# 內部臨時筆記（本機保留，不入版控）
+/進度.md
+/STREAMLIT至Vue前端改版說明.md
 
 # 根目錄孤兒 lockfile（無對應 package.json，勿提交）
 /package-lock.json
