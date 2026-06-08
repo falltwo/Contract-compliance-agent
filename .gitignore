@@ -26,6 +26,8 @@ ENV/
 bm25_corpus.json
 # 來源註冊表（灌入時更新）
 sources_registry.json
+# 知識庫同步任務紀錄（runtime 產生）
+data/knowledge_base/jobs.jsonl
 # Eval 運行記錄（EVAL_LOG_ENABLED=1 時寫入）
 eval_runs.jsonl
 # Eval 批次結果（run_eval.py 輸出）
@@ -65,3 +67,6 @@ docs/*
 !docs/update-summary-2026-04-17.md
 !docs/DGX_網站使用與維運手冊_v1.2.md
 uploads/
+
+# 根目錄孤兒 lockfile（無對應 package.json，勿提交）
+/package-lock.json
