@@ -537,16 +537,6 @@ Contract-compliance-agent/
 - 本系統輸出內容不構成法律意見或正式法律建議
 - AI 可能誤判、漏判或誤引，所有結果應由合格法律專業人士複核
 - 法條查詢依賴外部搜尋結果，仍需人工確認最新版本與適用性
-
----
-
-## 延伸閱讀
-
-- [DGX 使用與維運手冊 v1.2](docs/DGX_網站使用與維運手冊_v1.2.md)
-- [更新紀錄 2026-04-15](docs/update-summary-2026-04-15.md)
-- [backend/README.md](backend/README.md)：API、測試與部署補充
-- [web/README.md](web/README.md)：Vue 前端開發說明
-
 ---
 
 ## 貢獻指南
