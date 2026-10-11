@@ -1,576 +1,184 @@
 # Contract Compliance Agent
 
-> Enterprise AI contract review: RAG + multi-expert agents + legal lookup, with Streamlit demo and FastAPI + Vue production deployment.
+> Upload a contract and the system flags high-risk clauses, suggests edits, and cites the statutes behind each finding. It does a first pass for a human reviewer, who still makes the call.
 
 [![CI](https://github.com/falltwo/Contract-compliance-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/falltwo/Contract-compliance-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/falltwo/Contract-compliance-agent)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Vue](https://img.shields.io/badge/vue-3-42b883?logo=vue.js&logoColor=white)](https://vuejs.org/)
 
-A contract review system built for legal, procurement, internal control, and AI product teams. It combines contract risk detection, legal reference lookup, knowledge-base Q&A, and evaluation workflows into a single entry point so teams can complete a first-pass review in minutes with traceable citations.
+[繁體中文](README.md) | **English**
 
-Traditional Chinese documentation: [README.md](README.md).
+Finalist in the 2nd Best AI Awards (智慧創新大賞), run by Taiwan's Ministry of Economic Affairs in 2026. Built by a team of three between March and June 2026.
 
----
+Most of the time in a first-pass contract review goes into reading every clause and then looking up the relevant law for each one. This project connects those two steps. It finds risky clauses in the contract, looks up the matching articles on Taiwan's Judicial Yuan and national law databases, and returns risk cards that each point to the contract passage and the statute they rely on.
 
-## Why This Project
+The system works in Traditional Chinese and targets Taiwanese law.
 
-- ⚡ Shortens first-pass review from manual clause reading to upload-and-ask or one-click review.
-- ⚖️ Goes beyond summarisation — combines risk analysis with legal reference lookup to surface high-risk clauses faster.
-- 🔎 Grounds every answer in retrieved chunks, supports citations, strict mode, and reduces hallucination risk.
-- 🧭 Provides both `Streamlit` demo and `FastAPI + Vue` production paths so teams can go from proof-of-concept to internal deployment without rewriting.
-- 📊 Includes repeatable Eval datasets and batch validation, so quality is measured, not just demonstrated.
+## What it does
 
-## Who It Is For
-
-| Audience | Best Use Case |
-|----------|---------------|
-| Legal / compliance teams | Find high-risk clauses, compare legal references, complete first-pass review in 5 minutes |
-| Internal AI teams | Extend an existing RAG + agent architecture for more contract types and tool chains |
-| PoC / competition teams | Demo a full upload → retrieve → review → validate workflow in a short time |
-| Platform / IT teams | Deploy internally with `FastAPI + Vue` on DGX or other Linux infrastructure |
-
----
-
-## Example Use Cases
-
-### Case A: Procurement contract quick review
-
-> A procurement manager receives a 15-page IT services contract from a vendor.
-
-1. Upload the contract (PDF / DOCX) — the system vectorises it automatically
-2. Type "Review the high-risk clauses in this contract"
-3. The system responds in **20–40 seconds** with:
-   - Structured risk cards (indemnity, SLA, confidentiality…)
-   - Each card includes **risk level (High/Medium/Low)**, **legal basis** (linked to judicial.gov.tw), and **revision suggestion**
-4. Click a card to jump directly to the source clause in the document preview
-
-**ROI:** Manual clause-by-clause reading typically takes 60–90 minutes. AI-assisted first pass takes ~5 minutes, letting legal staff focus on deep judgment for high-risk clauses.
-
-### Case B: Legal reference cross-check
-
-> A contract clause mentions "joint guarantor liability" — is it compliant with the Civil Code?
+Upload a contract (`.pdf`, `.docx`, `.txt`, `.md`) and ask, for example:
 
 ```text
-Does Article 12 of this contract on joint guarantor liability comply with Taiwan's Civil Code? Please cite the relevant provisions.
+請審閱這份合約的風險條款，並列出相對應的法律依據
+(Review this contract's risk clauses and list the legal basis for each.)
 ```
 
-The system automatically: (1) queries Tavily + judicial.gov.tw (2) retrieves the Civil Code provisions (3) cross-references them against the contract text.
+You get structured risk cards. Each one has:
 
-### Case C: NDA confidentiality period risk
+- The quoted clause and its article number; clicking the card jumps to that spot in the document preview
+- A risk level (high / medium / low)
+- The legal basis, linked to the Judicial Yuan or the national law database
+- A suggested edit. Before suggesting that something be "added", the model is told to check whether another clause already covers it
 
-```text
-This NDA requires 5 years of confidentiality after termination. Is this reasonable under Taiwan legal practice?
-```
+You can also ask questions against the knowledge base ("How long does this NDA's confidentiality obligation last?") or just look up a statute. In strict mode, answers come only from the knowledge base, and the model doesn't fill gaps with its own legal knowledge.
 
----
+## How it works
 
-## System Architecture
+### Rules first, the model only when rules can't decide
 
-### Request Flow
+`intent_detector.py` uses keyword matching for requests with a clear intent, such as contract review, statute lookup and web scraping. Those requests never call an LLM. Anything the rules can't classify goes to `agent_router.py`, where the model picks a tool.
+
+`eval/` holds two routing sets (20 general questions, 10 contract questions) for measuring routing accuracy, tool success rate and latency.
+
+### Hybrid retrieval with a legal term dictionary
+
+Vector search (Pinecone) and BM25 keyword search run side by side and are merged with RRF. BM25 tokenizes with jieba, whose default dictionary splits terms like 懲罰性違約金 (punitive liquidated damages) into pieces. `rag_common.py` adds 60 contract and legal terms, and `BM25_JIEBA_USERDICT` lets you load your own.
+
+### Investigator and Judge are separate prompts
+
+Contract review runs in two stages. The Investigator gathers the relevant clauses and knowledge-base references; the Judge may only reason from what the Investigator hands over. When an answer is wrong, you can tell whether the evidence was missing or the judgment was off.
+
+### A cap on LLM calls per query
+
+One RAG query makes at most 12 LLM calls (`RAG_MAX_LLM_CALLS`). Past that it stops and reports instead of retrying forever. Lightweight mode (`.env.lightweight`) uses a lower cap and turns off multi-query.
+
+### Live progress
+
+The contract + statute flow takes a while. `progress.py` uses a ContextVar to pass progress events out of a ThreadPoolExecutor into an SSE stream, and the frontend shows three stages: retrieving the contract, searching statutes, writing the assessment.
+
+### Request flow
 
 ```mermaid
 flowchart TD
-    U([User Input]) --> AR[Agent Router\nagent_router.py]
+    U([User input]) --> ID{Rule-based intent<br/>intent_detector.py}
+    ID -->|contract + law| CRL[Contract + statute analysis]
+    ID -->|contract review| CRA[Contract risk agent]
+    ID -->|statute lookup| TLW[Judicial Yuan search]
+    ID -->|no rule matched| LLMD{LLM router<br/>agent_router.py}
 
-    %% Intent detection: rule-first (intent_detector.py), fall back to LLM
-    AR --> ID{Intent Detection\nintent_detector.py}
-    ID -->|rule: contract + law| CRL[contract_risk_with_law_search]
-    ID -->|rule: contract review| CRA[ContractRiskAgent]
-    ID -->|rule: judicial.gov.tw| TLW[tw_law_web_search\nTavily + judicial.gov.tw]
-    ID -->|no rule match| LLMD{LLM router decision}
+    LLMD --> RG[LangGraph RAG]
+    LLMD --> EA[Expert agents<br/>financials / ESG]
+    LLMD --> WS[Web search]
+    LLMD --> CH[Chart analysis]
 
-    LLMD -->|RAG knowledge base| RG[LangGraph RAG\nrag_graph.py]
-    LLMD -->|Research mode| RES[research\nRAG + Web]
-    LLMD -->|Finance / ESG / Data| EA[Expert Agents\nexpert_agents.py]
-    LLMD -->|Web search| WS[web_search\nTavily]
-    LLMD -->|Chart analysis| CH[analyze_and_chart\nECharts MCP]
-    LLMD -->|Small talk| ST[small_talk\nDirect LLM]
+    CRL --> RG
+    CRA --> RG
+    EA --> RG
+    CRL -.-> LS[Statute search<br/>up to 4 in parallel]
 
-    %% RAG is shared infra — contract / expert paths call it internally
-    CRL -->|retrieve_only| RG
-    CRA -->|retrieve_only| RG
-    EA  -->|retrieve_only| RG
-    RES --> RG
-
-    %% Law search is a sub-step of contract+law, with SSE status emitted
-    CRL -.sub-flow.-> LS[Law Search\nTavily → judicial.gov.tw\nparallel, max 4 refs]
-    CRL -.progress.-> PG[SSE status\ncontract_retrieve → law_search → contract_generate]
-
-    %% RAG state machine
-    RG --> Q[Query Rewrite + Multi-query\nparallel embedding+search]
-    Q --> RET[Hybrid Retrieval\nPinecone + BM25 jieba]
-    RET --> RK[Rerank\nMMR default / LLM / none]
-    RK --> PKG[Investigator packs evidence]
-    PKG --> GEN[Judge evaluates risk]
-
-    GEN --> OUT([Answer + Citations + Risk annotation])
+    RG --> RET[Hybrid retrieval<br/>Pinecone + BM25]
+    RET --> RK[Rerank<br/>MMR / LLM]
+    RK --> INV[Investigator gathers evidence]
+    INV --> JDG[Judge assesses risk]
+    JDG --> OUT([Answer + sources + risk labels])
     LS --> OUT
-    WS --> OUT
     TLW --> OUT
+    WS --> OUT
     CH --> OUT
-    ST --> OUT
 ```
 
-### LangGraph RAG State Machine
+## Quick start
 
-```mermaid
-stateDiagram-v2
-    [*] --> retrieve : user question
-    retrieve --> rewrite : RAG_MULTI_QUERY=1
-    retrieve --> rerank : direct rerank
-    rewrite --> aux_parallel : generate aux queries
-    aux_parallel --> rerank : ThreadPool\n(RAG_AUX_QUERY_CONCURRENCY=4)
-    rerank --> package : Investigator assembles evidence\n(RAG_RERANK_METHOD=mmr|llm|none)
-    package --> generate : Judge evaluates risk
-    generate --> [*] : answer + sources + risk annotation
-```
-
-### Deployment Architecture
-
-```mermaid
-flowchart LR
-    subgraph Client
-        B1[Browser\nFrontend :4173]
-        B2[Browser\nAdmin :4174]
-    end
-
-    subgraph DGX["DGX Spark (spark-98e3)"]
-        FE[Vue Frontend\n:4173]
-        AD[Vue Admin\n:4174]
-        API[FastAPI\n:8000]
-        OL[Ollama\ngemma3:27b]
-    end
-
-    subgraph Cloud
-        PC[(Pinecone\nvector DB)]
-        TV[Tavily\nlegal lookup]
-    end
-
-    B1 <--> FE
-    B2 <--> AD
-    FE <--> API
-    AD <--> API
-    API <--> OL
-    API <--> PC
-    API <--> TV
-```
-
-### CI / Auto-Deploy Pipeline
-
-```mermaid
-flowchart LR
-    P[git push\nto main] --> CI[GitHub Actions]
-    CI --> S[secret-scan\ngitleaks]
-    S -->|pass| T1[pytest]
-    S -->|pass| T2[web build\n+ TS check]
-    S -->|pass| T3[Playwright E2E]
-    T1 & T2 & T3 -->|all pass| D[Deploy Job]
-    D -->|Tailscale SSH| DGX2[DGX\ndeploy script]
-    DGX2 --> DONE([Services updated ✓])
-```
-
----
-
-## Features
-
-- 📄 Upload contracts in `.txt`, `.md`, `.pdf`, `.docx`
-- 🧠 LangGraph-powered RAG with multi-turn chat and knowledge-base Q&A
-- 🔀 Agent Router that selects between RAG, contract review, legal lookup, and expert flows
-- ⚖️ Contract risk assessment + legal lookup with AI self-check
-- 🔍 Hybrid retrieval combining Pinecone vector search with BM25
-- 🧪 Built-in Eval datasets, batch execution, and regression tracking
-- 🚀 Streamlit demo UI and Vue Web app (split frontend + admin)
-- 🖥️ Ollama local-model support and persistent DGX deployment
-- 🤖 Auto-deploy to DGX after CI passes (GitHub Actions + Tailscale)
-- 🔒 Optional Bearer-token auth for admin endpoints (`ADMIN_API_TOKEN`)
-- 📊 Real dependency health check on `/health` (Ollama + Pinecone)
-
----
-
-## Quick Start
-
-### Prerequisites
-
-| Item | Notes |
-|------|-------|
-| Python | `3.13+` |
-| `uv` | Python package and env manager |
-| Pinecone | Vector index for retrieval |
-| LLM Provider | Google Gemini or Ollama |
-| Tavily | Optional — enables legal / web lookup |
-| Node.js LTS | Required for the Vue frontend |
-
-### 1. Create environment variables
+You need Python 3.13+, [uv](https://docs.astral.sh/uv/), a Pinecone index, and either a Gemini API key or a local Ollama. Statute and web lookup also need a Tavily API key.
 
 ```bash
-cp .env.example .env
-# edit .env and fill in the required values
+cp .env.example .env      # fill in PINECONE_API_KEY, PINECONE_INDEX, CHAT_PROVIDER, ...
+uv sync
+uv run rag_ingest.py      # ingest the sample contracts in data/
+uv run streamlit run streamlit_app.py   # http://localhost:8501
 ```
 
-### 2. Required and common settings
+Main environment variables:
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `PINECONE_API_KEY` | Yes | Pinecone API key |
-| `PINECONE_INDEX` | Yes | Pinecone index name |
-| `CHAT_PROVIDER` | Yes | `gemini` or `ollama` |
-| `GOOGLE_API_KEY` | Gemini only | Cloud chat model |
-| `EMBEDDING_PROVIDER` | Recommended | `gemini` or `ollama` |
-| `OLLAMA_CHAT_MODEL` | Ollama only | Local chat model name |
-| `OLLAMA_EMBED_MODEL` | Ollama recommended | Local embedding model name |
-| `TAVILY_API_KEY` | Optional | Legal / web search |
-| `ADMIN_API_TOKEN` | Optional | Protects `/api/v1/admin/*` with Bearer token |
+| Variable | Notes |
+|------|------|
+| `PINECONE_API_KEY`, `PINECONE_INDEX` | Required |
+| `CHAT_PROVIDER` | `gemini` or `ollama` |
+| `GOOGLE_API_KEY` | Required with Gemini |
+| `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL` | Set when using Ollama |
+| `TAVILY_API_KEY` | Optional; enables statute and web lookup |
 
-Recommended local-model config:
+### Fully local
 
-```env
-PINECONE_INDEX=weck06
-CHAT_PROVIDER=ollama
-OLLAMA_CHAT_MODEL=gemma3:27b
-EMBEDDING_PROVIDER=ollama
-OLLAMA_EMBED_MODEL=snowflake-arctic-embed2:568m
-```
-
-### Team shared `.env` rules
-
-1. `PINECONE_INDEX` is fixed at `weck06` in the shared environment — do not change without approval from the ops team.
-2. Personal experiments must use a local untracked `.env` only. Do not modify `.env.example`.
-3. Do not commit personal or temporary index names to `main`.
-
-### Multi-model routing (optional)
-
-Route cheaper stages to a smaller model to reduce GPU load and latency:
-
-```env
-# Low-cost stages (routing / rewrite / rerank)
-OLLAMA_ROUTER_MODEL=gemma3:4b-it-qat
-OLLAMA_RAG_REWRITE_MODEL=gemma3:4b-it-qat
-OLLAMA_RAG_RERANK_MODEL=gemma3:4b-it-qat
-
-# Main answer stage
-OLLAMA_RAG_GENERATE_MODEL=gemma3:27b
-
-# Optional high-quality contract verification
-OLLAMA_CONTRACT_RISK_VERIFY_MODEL=gpt-oss:120b
-```
-
-### Lightweight deployment mode
-
-Copy `.env.lightweight` as your `.env` to run entirely on-device with no cloud API dependencies:
+It runs without any cloud API. Light steps (routing, rewriting, reranking) go to a small model and only generation uses a larger one:
 
 ```bash
 cp .env.lightweight .env
-ollama pull gemma3:4b-it-qat          # routing / rewrite / rerank (~2.5 GB VRAM)
-ollama pull gemma3:12b                 # main generation (~7 GB VRAM)
-ollama pull snowflake-arctic-embed2:568m  # embedding (568 M params)
+ollama pull gemma3:4b-it-qat              # routing / rewrite / rerank
+ollama pull gemma3:12b                    # generation
+ollama pull snowflake-arctic-embed2:568m  # embeddings
 ```
 
-**Standard vs lightweight deployment:**
+Our standard setup on the DGX uses `gemma3:27b` for generation, with an optional contract re-check model set by `OLLAMA_CONTRACT_RISK_VERIFY_MODEL` (e.g. `gpt-oss:120b`). Every stage can be pointed at its own model through `OLLAMA_*_MODEL`; see `.env.example`.
 
-| Component | Standard (Gemini / 27B) | Lightweight (4B + 12B) |
-|-----------|------------------------|------------------------|
-| Routing / rewrite / rerank | Gemini flash-lite / gemma3:27b | gemma3:4b-it-qat |
-| Main generation | gemma3:27b | gemma3:12b |
-| Embedding | gemini-embedding-001 (cloud) | snowflake-arctic-embed2:568m (local) |
-| LLM calls per query | up to 12 | up to 6 |
-| Multi-query | enabled | disabled |
-| Rerank strategy | MMR (default) / LLM rerank (opt-in) | MMR fixed |
-| Rule-based routing cost | 0 LLM calls (rules cover 80%+ intents) | 0 LLM calls (same) |
-| Cloud API dependency | Google / Gemini | **none** |
-| Recommended VRAM | 24 GB (A5000+) | **10 GB+** (consumer GPU) |
-
-### Timeout settings
-
-```env
-OLLAMA_TIMEOUT_SEC=120
-OLLAMA_ROUTER_TIMEOUT_SEC=20
-OLLAMA_RAG_REWRITE_TIMEOUT_SEC=20
-OLLAMA_RAG_RERANK_TIMEOUT_SEC=25
-OLLAMA_RAG_GENERATE_TIMEOUT_SEC=120
-```
-
-### 3. Install dependencies
+### Web app (FastAPI + Vue)
 
 ```bash
-uv sync
+uv run uvicorn backend.main:app --reload --port 8000   # API docs at /docs
+cd web && npm ci && npm run dev                        # /chat, /upload, /sources, /admin
 ```
 
-### 4. Ingest sample data
+The admin page lists uploaded sources, runs evaluations, and shows loaded Ollama models and systemd service status.
 
-```bash
-uv run rag_ingest.py
-```
-
-### 5. Launch the Streamlit demo
-
-```bash
-uv run streamlit run streamlit_app.py
-# http://localhost:8501
-```
-
----
-
-## Web Mode: FastAPI + Vue
-
-### Backend API
-
-```bash
-uv run uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
-# Docs: http://127.0.0.1:8000/docs
-```
-
-### Frontend (local dev)
-
-```bash
-cd web && npm ci && npm run dev
-# Frontend: http://localhost:5173/chat
-# Admin:    http://localhost:5173/admin
-```
-
----
-
-## Deployment
-
-### DGX / Internal Linux
-
-```bash
-bash scripts/install_dgx_services.sh   # first install (sets up systemd units)
-bash scripts/deploy_contract_agent.sh  # manual redeploy
-```
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| `contract-agent-api` | `8000` | FastAPI backend |
-| `contract-agent-web-frontend` | `4173` | User chat / upload / sources |
-| `contract-agent-web-admin` | `4174` | Admin / eval dashboard |
-
-The deploy script automatically generates `web/.env.frontend` and `web/.env.admin` using the Tailscale IP (preferred) or LAN IP, then builds and restarts services.
-
-Each service includes zombie-process prevention:
-- `ExecStartPre`: force-kills any leftover process on the port before starting
-- `KillMode=control-group`: kills the entire process tree (npm → sh → node) on stop
-- `TimeoutStopSec=10`: ensures processes exit within 10 s before a new instance starts
-
-### Auto-deploy (already configured)
-
-Push to `main` and once all four CI jobs pass, GitHub Actions connects via Tailscale SSH and runs the deploy script on DGX automatically.
-
-Check deploy status: GitHub repo → Actions → latest run → **Deploy to DGX** job.
-
----
-
-## Usage
-
-### Contract review
-
-```text
-Please review the risk clauses in this contract
-```
-
-```text
-Summarise the high-risk clauses and list the relevant legal basis
-```
-
-### Knowledge-base Q&A
-
-```text
-How long does the confidentiality obligation last in this NDA?
-```
-
-```text
-List the documents currently available in the knowledge base
-```
-
-### Strict mode
-
-Enable strict mode in the UI to restrict answers to knowledge-base content only. Recommended for compliance and audit workflows.
-
----
-
-## Tech Stack
-
-| Category | Tools |
-|----------|-------|
-| Languages | Python 3.13+, TypeScript |
-| Backend | FastAPI, Pydantic Settings, Uvicorn |
-| Frontend | Vue 3, Vite, Pinia, Vue Router |
-| Demo UI | Streamlit |
-| AI / RAG | LangGraph, Pinecone, BM25 (jieba), Ollama, Google Gemini |
-| External tools | Tavily (law / web search), Groq, Firecrawl (optional web scraping) |
-| Testing | pytest, Playwright |
-| CI/CD | GitHub Actions + Tailscale SSH |
-
----
-
-## Technical Innovation
-
-### 1. Rule-first intent routing (zero-LLM routing cost)
-
-`intent_detector.py` uses pure regex/string matching to handle 80%+ of routing decisions (contract review, Taiwan law lookup, Firecrawl scraping) **without any LLM call**. Only ambiguous intents that don't match a rule fall through to the LLM router.
-
-| Approach | Routing method | Cost per query |
-|----------|---------------|----------------|
-| Pure LLM routing (ReAct / function-calling) | LLM every time | 1 LLM call |
-| This system | Rules first → LLM fallback | **0 LLM calls (rule match)** |
-
-### 2. Tiered model routing
-
-Different inference difficulty levels use different model sizes instead of always using the largest model:
-
-```
-Routing / rewrite / rerank:  gemma3:4b-it-qat  (quantised, <3 GB VRAM, fast)
-Main generation:              gemma3:27b (standard) / gemma3:12b (lightweight)
-Contract verification (opt):  gpt-oss:120b (open-source large model)
-Embedding:                    snowflake-arctic-embed2:568m (568 M params, local, zero API cost)
-```
-
-### 3. Hybrid retrieval with Chinese legal-term BM25
-
-Pinecone semantic vector search + BM25 keyword retrieval + RRF Fusion. jieba word-level tokenisation with ~50 built-in Taiwan contract terms (e.g., "違約金", "政府採購法", "智慧財產權") ensures precise matching of legal terminology that embedding models may miss.
-
-### 4. Investigator / Judge dual-prompt architecture
-
-Contract review runs in two stages: (1) the **Investigator** gathers and cross-references relevant clause evidence; (2) the **Judge** produces the final risk assessment and suggestions. Separating evidence collection from reasoning improves accuracy and explainability.
-
-### 5. ContextVar-based SSE progress streaming
-
-The contract + legal lookup flow (20–40 s) uses `progress.py`'s ContextVar interface to safely propagate progress events from within a `ThreadPoolExecutor` to the SSE stream. The frontend displays a real-time 3-stage stepper: "Retrieving contract → Searching law → Generating assessment."
-
----
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check with dependency probing (Ollama + Pinecone) |
-| POST | `/api/v1/chat` | Main Q&A (RAG / agent routing) |
-| POST | `/api/v1/ingest/upload` | Multi-file upload and vectorisation |
-| GET | `/api/v1/sources` | List ingested sources |
-| GET | `/api/v1/sources/preview` | Preview source chunks |
-| GET | `/api/v1/eval/runs` | Online eval records |
-| GET | `/api/v1/eval/batch/{run_id}` | Batch eval detail |
-| GET | `/api/v1/admin/services` | systemd service status (auth required if token set) |
-| POST | `/api/v1/admin/services/restart` | Restart services (auth required if token set) |
-| GET | `/api/v1/admin/ollama/models` | Ollama loaded models (auth required if token set) |
-
-Full schema: `http://127.0.0.1:8000/docs`
-
-### Admin token auth
-
-If `ADMIN_API_TOKEN` is set in `.env`, all `/api/v1/admin/*` endpoints require a Bearer token:
-
-```bash
-curl -H "Authorization: Bearer <token>" http://HOST:8000/api/v1/admin/services
-```
-
-If not set, endpoints are open (backward-compatible default).
-
----
-
-## Eval and Quality Validation
+## Tests and evaluation
 
 ```bash
 uv sync --extra dev
-uv run pytest --tb=short -q
-
-uv run python eval/run_eval.py
+uv run pytest                                                     # 144 tests
+uv run python eval/run_eval.py                                    # general routing set
 uv run python eval/run_eval.py --eval-set eval/eval_set_contract.json
-uv run python eval/run_eval.py --groq
 ```
 
-Eval output: `eval/runs/run_<timestamp>_metrics.json`
-Tracked metrics: routing accuracy, tool success rate, latency P50/P95.
+On every push to `main` and every PR, CI runs a gitleaks secret scan, pytest, frontend type checks and build, and Playwright E2E. When a push to `main` passes all of them, it deploys to the team's DGX Spark over Tailscale SSH. Evaluation results are written to `eval/runs/`.
 
----
+## Deployment
 
-## Project Structure
+```bash
+bash scripts/install_dgx_services.sh   # first-time systemd setup
+bash scripts/deploy_contract_agent.sh  # manual update
+```
+
+Services listen on `:8000` (API), `:4173` (frontend) and `:4174` (admin). Operations notes (in Chinese) are in [`docs/DGX_網站使用與維運手冊_v1.2.md`](docs/DGX_網站使用與維運手冊_v1.2.md).
+
+## Project layout
 
 ```text
-Contract-compliance-agent/
-├── agent_router.py          # Intent routing core
-├── rag_graph.py             # LangGraph RAG state machine
-├── rag_common.py            # Pinecone, Embedding, BM25 shared logic
-├── chat_service.py          # Chat entry point and Eval logging
-├── expert_agents.py         # Finance, ESG, risk expert agents
-├── ingest_service.py        # Document ingest and source management
-├── llm_client.py            # LLM client and multi-model routing
-├── streamlit_app.py         # Demo UI
-│
-├── backend/
-│   ├── main.py              # FastAPI app entry point
-│   ├── config.py            # Pydantic Settings
-│   └── api/routes/          # chat / ingest / eval / admin / health
-│
-├── web/                     # Vue 3 frontend (split frontend + admin)
-│   └── src/
-│       ├── views/           # Page components
-│       ├── components/      # UI components
-│       └── stores/          # Pinia state
-│
-├── eval/                    # Eval datasets and batch runner
-├── data/                    # Sample knowledge-base files
-├── deploy/systemd/          # systemd service templates
-├── scripts/                 # Install and deploy scripts
-├── docs/                    # Operations manual and update notes
-└── tests/                   # pytest test suite
+intent_detector.py   rule-based intent detection
+agent_router.py      LLM routing and tool dispatch
+rag_graph.py         LangGraph RAG flow (Investigator / Judge)
+rag_common.py        Pinecone, embeddings, BM25 and the legal term dictionary
+expert_agents.py     contract risk, financial and ESG expert agents
+ingest_service.py    document ingestion and source management
+streamlit_app.py     demo UI
+backend/             FastAPI
+web/                 Vue 3 frontend and Playwright E2E
+eval/                routing eval sets and runner
+tests/               pytest
 ```
 
----
+## Limitations
 
-## Troubleshooting
+- The output is not legal advice. The model can miss issues, misjudge them or cite the wrong article, and a qualified person has to check the results.
+- Statute lookup depends on external search, so the version and applicability of each article still need a human check.
+- We have not formally measured how many LLM calls the rule-first routing saves, or how much review time the tool saves in practice.
 
-| Symptom | What to Check |
-|---------|---------------|
-| No retrieval results | Verify Pinecone API key and index name; confirm data was ingested |
-| Model not found | Run `ollama list`; verify `GOOGLE_API_KEY` is valid |
-| Response timeout | Increase `OLLAMA_*_TIMEOUT_SEC`; reduce `TOP_K` |
-| Upload fails | File must be < 32 MB in `.txt` `.md` `.pdf` `.docx` format |
-| CORS error | Ensure `API_CORS_ORIGINS` or `API_CORS_ORIGIN_REGEX` includes the frontend URL |
-| Auto-deploy not triggered | Confirm push to `main`; all four CI jobs must pass |
-| Zombie processes | Run `sudo systemctl restart contract-agent-web-frontend contract-agent-web-admin`; `ExecStartPre` clears stale ports automatically |
+## Team
 
----
-
-## Limits and Disclaimer
-
-This project is a first-pass contract review assistant, not a legal advice system.
-
-- Output does not constitute legal advice or a formal legal opinion
-- AI may misclassify, omit, or miscite; results should always be reviewed by qualified legal professionals
-- Legal lookup depends on external search results; final applicability must be confirmed by humans
-
----
-
-## Further Reading
-
-- [DGX Operations Manual v1.2](docs/DGX_網站使用與維運手冊_v1.2.md)
-- [Update Notes 2026-04-17](docs/update-summary-2026-04-17.md): correctness, security, and zombie process fixes
-- [Update Notes 2026-04-15](docs/update-summary-2026-04-15.md)
-- [backend/README.md](backend/README.md): API, testing, and deployment details
-- [web/README.md](web/README.md): Vue frontend development notes
-
----
-
-## Contributing
-
-Issues and pull requests are welcome, especially for:
-
-- contract risk rules and prompt improvements
-- legal lookup quality and citation improvements
-- Eval dataset expansion and regression coverage
-- DGX / Linux deployment and operations improvements
-- Vue admin UI and user experience improvements
-
-Before submitting:
-
-1. Run contract checks if you changed APIs or data structures
-2. Run the relevant pytest cases if you changed chat or ingest flows
-3. Manually verify `/chat`, `/upload`, and `/admin` if you changed frontend behaviour
-4. Update `README` or `docs/` when startup or deployment steps change
-
----
+- [@falltwo](https://github.com/falltwo): backend and RAG retrieval, local models and DGX deployment, CI/CD, evaluation and the admin console
+- [@ewiwi22255](https://github.com/ewiwi22255): LLM routing, expert agents, chat frontend
+- [@wweyuiop1205-lgtm](https://github.com/wweyuiop1205-lgtm): initial system skeleton and first CI setup
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)
